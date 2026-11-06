@@ -1,0 +1,38 @@
+# Data and outputs (large files, never committed)
+data/
+outputs/
+*.h5
+*.hdf5
+*.mseed
+*.npy
+*.npz
+
+# Model checkpoints and experiment logs
+*.pt
+*.pth
+*.ckpt
+runs/
+lightning_logs/
+
+# SeisBench cache if placed inside the project
+.seisbench/
+
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+build/
+dist/
+
+# Jupyter
+.ipynb_checkpoints/
+
+# Environments
+.venv/
+venv/
+.env
+
+# Editors and OS
+.vscode/
+.idea/
+.DS_Store

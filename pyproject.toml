@@ -1,0 +1,18 @@
+[build-system]
+requires = ["setuptools>=68", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "wqu"
+version = "0.1.0"
+description = "Waveform quality classification with uncertainty quantification on the ESM25 strong-motion dataset"
+readme = "README.md"
+requires-python = ">=3.11"
+authors = [{ name = "Giuliana Paradiso" }]
+dynamic = ["dependencies"]
+
+[tool.setuptools.dynamic]
+dependencies = { file = ["requirements.txt"] }
+
+[tool.setuptools.packages.find]
+where = ["src"]
