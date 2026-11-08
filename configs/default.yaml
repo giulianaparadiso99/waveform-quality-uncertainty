@@ -1,0 +1,136 @@
+# Default configuration for the waveform quality uncertainty project.
+# Relative paths are resolved against the project root (the parent of configs/).
+
+data:
+  # "seisbench": load the ESM25 benchmark datasets through SeisBench (downloads
+  #              metadata and waveforms into SEISBENCH_CACHE_ROOT on first use).
+  # "local_csv": read only the metadata CSV files from local_metadata_dir
+  #              (development mode, no waveforms available).
+  source: local_csv
+  local_metadata_dir: ~/tmp_esm25
+  # Fixed waveform length of ESM25 traces (84000 samples at 200 Hz).
+  waveform_length_s: 420.0
+  # Name of the metadata file inside each SeisBench dataset folder.
+  seisbench_metadata_file: metadata.csv
+  # Keyword arguments passed to the SeisBench dataset constructors.
+  dataset_options: {}
+  # Label convention: 1 marks the bad-quality class, 0 the good-quality class.
+  subsets:
+    - name: good
+      seisbench_class: ESM25GoodCV
+      local_metadata_file: metadata_goodcv.csv
+      label: 0
+    - name: bad
+      seisbench_class: ESM25BadCV
+      local_metadata_file: metadata_badcv.csv
+      label: 1
+
+columns:
+  # Columns added by the loading step.
+  label: label
+  subset: subset
+  subset_index: subset_index
+  station_id: station_id
+  # Existing ESM25 columns.
+  event_id: source_esm_id
+  # Columns read as text to preserve codes such as "00" or "001".
+  text:
+    - source_esm_id
+    - source_isc_id
+    - source_usgs_id
+    - source_ingv_id
+    - source_emsc_id
+    - station_network_code
+    - station_code
+    - station_location_code
+    - station_channel_code
+    - trace_u_channel_code
+    - trace_v_channel_code
+    - trace_w_channel_code
+    - trace_name
+    - trace_name_old
+  # Columns parsed as UTC timestamps.
+  datetime:
+    - source_esm_origin_time
+    - trace_start_time
+    - trace_start_time_orig_cv_u
+    - trace_end_time_orig_cv_u
+    - trace_start_time_orig_cv_v
+    - trace_end_time_orig_cv_v
+    - trace_start_time_orig_cv_w
+    - trace_end_time_orig_cv_w
+  # Preferred magnitude: first available value in this order (as in ESM25 notebook 09).
+  magnitude_priority:
+    - source_magnitude_emec_mw
+    - source_magnitude_mw
+    - source_magnitude_ml
+    - source_magnitude_ms
+    - source_magnitude_mb
+    - source_magnitude_md
+    - source_magnitude_m
+
+exploration:
+  # Features available before the quality review, grouped by interpretation.
+  feature_groups:
+    - name: physical
+      numeric:
+        - preferred_magnitude
+        - source_depth_km
+        - path_epi_dist_km
+        - path_hyp_dist_km
+        - max_unprocessed_pga_cps2
+        - station_preferred_vs30_mps
+      categorical:
+        - station_preferred_ec8_code
+    - name: acquisition
+      numeric:
+        - origin_year
+        - original_sampling_rate_hz
+        - original_duration_s
+        - recording_span_s
+        - component_start_spread_s
+      categorical:
+        - station_network_code
+        - station_id
+        - station_instrument_type_code
+        - station_nation_code
+        - original_data_mediator
+        - preferred_magnitude_type
+  # Columns that encode or follow the quality decision, or identify records.
+  excluded_columns:
+    - trace_processing_status
+    - trace_processing_type
+    - trace_name
+    - trace_name_old
+    - source_esm_id
+    - web_availability_code
+    - trace_late_triggered_event_01
+    - trace_has_padding_cv
+  # Pairs (variable, stratum) for stratified bad-rate tables.
+  stratified_comparisons:
+    - variable: original_sampling_rate_hz
+      stratum: station_network_code
+    - variable: origin_year
+      stratum: station_network_code
+    - variable: recording_span_s
+      stratum: preferred_magnitude
+  # Cross-validation folds for out-of-fold encoding of categorical features.
+  n_splits: 5
+  # Pseudo-count pulling rare categories towards the global bad rate.
+  target_encoding_smoothing: 20.0
+  # Number of quantile bins used when a numeric variable is stratified.
+  n_quantile_bins: 5
+  # Number of most frequent categories kept in tables and plots.
+  top_categories: 12
+  # Numeric columns with at most this many distinct values are treated as categories
+  # in stratified tables (e.g. original sampling rate); others are binned by quantiles.
+  max_discrete_levels: 20
+  # Minimum number of records for a cell of a stratified table to be shown.
+  min_stratum_count: 30
+  # Number of example records per class for waveform inspection.
+  n_waveform_examples: 2
+  random_seed: 42
+
+output:
+  figures_dir: outputs/figures/01_exploration
+  tables_dir: outputs/tables/01_exploration
