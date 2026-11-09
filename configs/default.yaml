@@ -179,6 +179,48 @@ waveforms:
   spectrum_top_sampling_rates: 4
   random_seed: 42
 
+preprocessing:
+  # Analysis window anchored on the time of the peak absolute acceleration (PGA) over the three components.
+  window:
+    pre_pga_s: 30.0
+    post_pga_s: 90.0
+    # Extra data on each side used by the transforms and discarded afterwards (edge effects).
+    # Must be at least half the STFT window and the Morlet wavelet half-width at min_frequency_hz.
+    context_margin_s: 20.0
+    # Fraction of the analysed segment (window plus margins) tapered at each end (Tukey window).
+    taper_fraction: 0.05
+  resampling:
+    target_sampling_rate_hz: 100.0
+    # Zero-phase Butterworth low-pass applied before resampling.
+    antialias_corner_hz: 40.0
+    antialias_order: 6
+  # Common time-frequency grid of spectrograms and scalograms.
+  grid:
+    min_frequency_hz: 0.1
+    max_frequency_hz: 40.0
+    n_frequencies: 128
+    n_times: 128
+  stft:
+    # Window length = window_cycles / min_frequency_hz (1 cycle: frequency resolution equal to min_frequency_hz).
+    window_cycles: 1.0
+    window_type: hann
+  cwt:
+    # Morlet parameter: trade-off between time and frequency resolution.
+    morlet_w0: 6.0
+  decibel:
+    # Power reference of the decibel scale (absolute, identical for all records).
+    reference_power: 1.0
+    # Power assigned to zero or tiny values before the logarithm.
+    # Provisional: revise after inspecting the power distributions in notebook 02.
+    floor_power: 1.0e-12
+  # Number of records whose power values are pooled to inspect the decibel distributions.
+  n_distribution_records: 200
+  # Number of records per class saved as PNG images for visual inspection.
+  n_png_records_per_class: 5
+  output_dir: data/processed
+  figures_dir: outputs/figures/02_preprocessing
+  tables_dir: outputs/tables/02_preprocessing
+
 output:
   figures_dir: outputs/figures/01_exploration
   tables_dir: outputs/tables/01_exploration

@@ -8,6 +8,7 @@ parameters instead of hardcoded values.
 from __future__ import annotations
 
 from collections.abc import Mapping
+import math
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
@@ -133,6 +134,48 @@ class WaveformConfig:
 
 
 @dataclass(frozen=True)
+class PreprocessingConfig:
+    """Parameters of the waveform-to-image preprocessing."""
+
+    pre_pga_s: float
+    post_pga_s: float
+    context_margin_s: float
+    taper_fraction: float
+    target_sampling_rate_hz: float
+    antialias_corner_hz: float
+    antialias_order: int
+    min_frequency_hz: float
+    max_frequency_hz: float
+    n_frequencies: int
+    n_times: int
+    stft_window_cycles: float
+    stft_window_type: str
+    morlet_w0: float
+    reference_power: float
+    floor_power: float
+    n_distribution_records: int
+    n_png_records_per_class: int
+    output_dir: Path
+    figures_dir: Path
+    tables_dir: Path
+
+    @property
+    def window_length_s(self) -> float:
+        """Length of the analysis window in seconds."""
+        return self.pre_pga_s + self.post_pga_s
+
+    @property
+    def stft_window_s(self) -> float:
+        """Length of the STFT window in seconds."""
+        return self.stft_window_cycles / self.min_frequency_hz
+
+    @property
+    def morlet_half_width_s(self) -> float:
+        """Standard deviation of the Morlet envelope at the lowest frequency, in seconds."""
+        return self.morlet_w0 / (2.0 * math.pi * self.min_frequency_hz)
+
+
+@dataclass(frozen=True)
 class OutputConfig:
     """Output directories for figures and tables."""
 
@@ -148,6 +191,7 @@ class ProjectConfig:
     columns: ColumnsConfig
     exploration: ExplorationConfig
     waveforms: WaveformConfig
+    preprocessing: PreprocessingConfig
     output: OutputConfig
 
 
@@ -412,6 +456,77 @@ def _build_waveform_config(section: Mapping[str, Any], project_root: Path) -> Wa
     return waveforms
 
 
+def _build_preprocessing_config(section: Mapping[str, Any], project_root: Path) -> PreprocessingConfig:
+    """Build and validate the ``preprocessing`` section.
+
+    Checks that the frequency band fits below the anti-alias corner and the new
+    Nyquist frequency, and that the context margin covers the STFT window and
+    the Morlet wavelet at the lowest frequency.
+
+    Args:
+        section: Parsed ``preprocessing`` mapping.
+        project_root: Base directory for relative paths.
+
+    Returns:
+        Validated PreprocessingConfig.
+    """
+    context = "preprocessing"
+    window = _require(section, "window", context)
+    resampling = _require(section, "resampling", context)
+    grid = _require(section, "grid", context)
+    stft = _require(section, "stft", context)
+    cwt = _require(section, "cwt", context)
+    decibel = _require(section, "decibel", context)
+    config = PreprocessingConfig(
+        pre_pga_s=float(_require(window, "pre_pga_s", f"{context}.window")),
+        post_pga_s=float(_require(window, "post_pga_s", f"{context}.window")),
+        context_margin_s=float(_require(window, "context_margin_s", f"{context}.window")),
+        taper_fraction=float(_require(window, "taper_fraction", f"{context}.window")),
+        target_sampling_rate_hz=float(_require(resampling, "target_sampling_rate_hz", f"{context}.resampling")),
+        antialias_corner_hz=float(_require(resampling, "antialias_corner_hz", f"{context}.resampling")),
+        antialias_order=int(_require(resampling, "antialias_order", f"{context}.resampling")),
+        min_frequency_hz=float(_require(grid, "min_frequency_hz", f"{context}.grid")),
+        max_frequency_hz=float(_require(grid, "max_frequency_hz", f"{context}.grid")),
+        n_frequencies=int(_require(grid, "n_frequencies", f"{context}.grid")),
+        n_times=int(_require(grid, "n_times", f"{context}.grid")),
+        stft_window_cycles=float(_require(stft, "window_cycles", f"{context}.stft")),
+        stft_window_type=str(_require(stft, "window_type", f"{context}.stft")),
+        morlet_w0=float(_require(cwt, "morlet_w0", f"{context}.cwt")),
+        reference_power=float(_require(decibel, "reference_power", f"{context}.decibel")),
+        floor_power=float(_require(decibel, "floor_power", f"{context}.decibel")),
+        n_distribution_records=int(_require(section, "n_distribution_records", context)),
+        n_png_records_per_class=int(_require(section, "n_png_records_per_class", context)),
+        output_dir=_resolve_path(_require(section, "output_dir", context), project_root),
+        figures_dir=_resolve_path(_require(section, "figures_dir", context), project_root),
+        tables_dir=_resolve_path(_require(section, "tables_dir", context), project_root),
+    )
+    nyquist_hz = config.target_sampling_rate_hz / 2.0
+    problems = []
+    if not 0.0 < config.min_frequency_hz < config.max_frequency_hz:
+        problems.append("grid requires 0 < min_frequency_hz < max_frequency_hz")
+    if config.max_frequency_hz > config.antialias_corner_hz:
+        problems.append("max_frequency_hz must not exceed antialias_corner_hz")
+    if config.antialias_corner_hz >= nyquist_hz:
+        problems.append("antialias_corner_hz must be below the target Nyquist frequency")
+    if config.pre_pga_s < 0 or config.post_pga_s <= 0:
+        problems.append("window requires pre_pga_s >= 0 and post_pga_s > 0")
+    if config.context_margin_s < max(config.stft_window_s / 2.0, 2.0 * config.morlet_half_width_s):
+        problems.append(
+            "context_margin_s must be at least half the STFT window "
+            f"({config.stft_window_s / 2.0:.1f} s) and twice the Morlet half-width "
+            f"({2.0 * config.morlet_half_width_s:.1f} s)"
+        )
+    if not 0.0 <= config.taper_fraction < 0.5:
+        problems.append("taper_fraction must be in [0, 0.5)")
+    if config.n_frequencies < 2 or config.n_times < 2:
+        problems.append("grid sizes must be at least 2")
+    if config.reference_power <= 0 or config.floor_power <= 0:
+        problems.append("reference_power and floor_power must be positive")
+    if problems:
+        raise ValueError("Invalid preprocessing configuration: " + "; ".join(problems) + ".")
+    return config
+
+
 def _build_output_config(section: Mapping[str, Any], project_root: Path) -> OutputConfig:
     """Build the ``output`` section.
 
@@ -458,6 +573,7 @@ def load_config(config_path: str | Path, project_root: str | Path | None = None)
         columns=_build_columns_config(_require(raw, "columns", "root")),
         exploration=_build_exploration_config(_require(raw, "exploration", "root")),
         waveforms=_build_waveform_config(_require(raw, "waveforms", "root"), root),
+        preprocessing=_build_preprocessing_config(_require(raw, "preprocessing", "root"), root),
         output=_build_output_config(_require(raw, "output", "root"), root),
     )
 

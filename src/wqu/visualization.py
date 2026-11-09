@@ -26,6 +26,10 @@ NEUTRAL_COLOR = "#52514e"
 REFERENCE_LINE_COLOR = "#9a9993"
 PADDING_SHADE_COLOR = "#e6e5e0"
 RATE_COLORMAP = "Oranges"
+POWER_COLORMAP = "Blues"
+WINDOW_TRACE_COLOR = "#2a2a28"
+OUTSIDE_TRACE_COLOR = "#c3c2bc"
+WINDOW_SHADE_COLOR = "#e9f1fb"
 MAP_LAND_COLOR = "#f2f1ee"
 MAP_EDGE_COLOR = "#9a9993"
 MAP_POINT_EDGE_COLOR = "#6b6a65"
@@ -442,4 +446,157 @@ def plot_mean_spectra(mean_log_psd: pd.DataFrame, counts: pd.Series, ax: Axes) -
     ax.set_xlabel("frequency [Hz] (dotted: original Nyquist frequency)")
     ax.set_ylabel("mean log10 PSD")
     ax.legend(title="original sampling rate")
+    return ax
+
+
+def plot_window_overlay(
+    trace: np.ndarray,
+    sampling_rate_hz: float,
+    window_start: int,
+    window_stop: int,
+    components: Sequence[str],
+    title: str,
+) -> Figure:
+    """Plot each component of a stored trace with the analysis window highlighted.
+
+    Samples outside the window (removed by the cut) are drawn in light grey and
+    samples inside it in dark grey, on top of each other, so that the cut can be
+    checked visually.
+
+    Args:
+        trace: Stored trace, shape (components, samples).
+        sampling_rate_hz: Sampling rate of the trace.
+        window_start: First sample of the window (may be negative).
+        window_stop: Sample after the last one of the window (may exceed the trace).
+        components: Component names (one per row).
+        title: Figure title.
+
+    Returns:
+        The Figure.
+    """
+    time_s = np.arange(trace.shape[-1]) / sampling_rate_hz
+    inside = (np.arange(trace.shape[-1]) >= window_start) & (np.arange(trace.shape[-1]) < window_stop)
+    figure, axes = plt.subplots(len(components), 1, figsize=(10, 1.8 * len(components)), sharex=True)
+    for ax, component, values in zip(np.atleast_1d(axes), components, trace):
+        ax.axvspan(window_start / sampling_rate_hz, window_stop / sampling_rate_hz, color=WINDOW_SHADE_COLOR, linewidth=0)
+        ax.plot(time_s, values, color=OUTSIDE_TRACE_COLOR, linewidth=0.6)
+        ax.plot(time_s, np.where(inside, values, np.nan), color=WINDOW_TRACE_COLOR, linewidth=0.6)
+        ax.set_ylabel(f"acceleration {component}")
+        ax.set_xlim(time_s[0], time_s[-1])
+    np.atleast_1d(axes)[-1].set_xlabel("time from trace start [s] (dark, shaded: analysis window; light: removed)")
+    figure.suptitle(title, x=0.01, ha="left")
+    figure.tight_layout()
+    return figure
+
+
+def plot_time_frequency(
+    image_db: np.ndarray,
+    frequency_edges_hz: np.ndarray,
+    times_s: np.ndarray,
+    ax: Axes,
+    value_range: tuple[float, float],
+) -> object:
+    """Draw one time-frequency image (decibels) with a logarithmic frequency axis.
+
+    Args:
+        image_db: Array of shape (frequencies, times).
+        frequency_edges_hz: Band edges (frequencies + 1 values).
+        times_s: Time-bin centres (equally spaced).
+        ax: Axes to draw on.
+        value_range: Colour scale limits (dB).
+
+    Returns:
+        The QuadMesh, for a shared colour bar.
+    """
+    step = times_s[1] - times_s[0]
+    time_edges = np.concatenate((times_s - step / 2, [times_s[-1] + step / 2]))
+    mesh = ax.pcolormesh(time_edges, frequency_edges_hz, image_db, cmap=POWER_COLORMAP,
+                         vmin=value_range[0], vmax=value_range[1], shading="flat")
+    ax.set_yscale("log")
+    ax.grid(visible=False)
+    return mesh
+
+
+def plot_representation_comparison(
+    window_waveform: np.ndarray,
+    waveform_rate_hz: float,
+    spectrogram_db: np.ndarray,
+    scalogram_db: np.ndarray,
+    frequency_edges_hz: np.ndarray,
+    times_s: np.ndarray,
+    components: Sequence[str],
+    title: str,
+) -> Figure:
+    """Waveform, spectrogram and scalogram of the analysis window, one row per component.
+
+    Each representation uses one colour scale for its three components (2nd to
+    99.5th percentile of its values), so that differences between components stay visible.
+
+    Args:
+        window_waveform: Resampled waveform of the window, shape (components, samples).
+        waveform_rate_hz: Sampling rate of ``window_waveform``.
+        spectrogram_db: Array of shape (components, frequencies, times).
+        scalogram_db: Array of shape (components, frequencies, times).
+        frequency_edges_hz: Band edges of the grid.
+        times_s: Time-bin centres of the grid.
+        components: Component names.
+        title: Figure title.
+
+    Returns:
+        The Figure.
+    """
+    figure, axes = plt.subplots(
+        len(components), 3, figsize=(16, 2.8 * len(components)), sharex=True, squeeze=False, layout="constrained"
+    )
+    waveform_time_s = np.arange(window_waveform.shape[-1]) / waveform_rate_hz
+    representations = {"spectrogram [dB]": spectrogram_db, "scalogram [dB]": scalogram_db}
+    meshes = {}
+    for row, component in enumerate(components):
+        axes[row, 0].plot(waveform_time_s, window_waveform[row], color=WINDOW_TRACE_COLOR, linewidth=0.5)
+        axes[row, 0].set_ylabel(f"acceleration {component}")
+        for column, (name, values) in enumerate(representations.items(), start=1):
+            value_range = tuple(np.percentile(values, [2.0, 99.5]))
+            meshes[name] = plot_time_frequency(values[row], frequency_edges_hz, times_s, axes[row, column], value_range)
+            axes[row, column].set_ylabel("frequency [Hz]")
+    for column, name in enumerate(representations, start=1):
+        axes[0, column].set_title(name, loc="left")
+        figure.colorbar(meshes[name], ax=axes[:, column], shrink=0.9, pad=0.02)
+    axes[0, 0].set_title("waveform (analysis window, resampled)", loc="left")
+    for column in range(3):
+        axes[-1, column].set_xlabel("time from window start [s]")
+    figure.suptitle(title, x=0.01, ha="left")
+    return figure
+
+
+def plot_value_distributions(
+    values_by_name: Mapping[str, np.ndarray],
+    ax: Axes,
+    x_label: str,
+    n_bins: int = 100,
+    quantile_range: tuple[float, float] = (0.0, 1.0),
+) -> Axes:
+    """Normalized histograms of several sets of values on a common set of bins.
+
+    Args:
+        values_by_name: Mapping from name to values (non-finite values are ignored).
+        ax: Axes to draw on.
+        x_label: Label of the x axis.
+        n_bins: Number of bins.
+        quantile_range: The x range spans these quantiles of the pooled values,
+            so that a few extreme values do not hide the bulk of the distribution.
+
+    Returns:
+        The Axes.
+    """
+    if len(values_by_name) > len(GROUP_COLORS):
+        raise ValueError(f"At most {len(GROUP_COLORS)} sets can be drawn.")
+    finite = {name: values[np.isfinite(values)] for name, values in values_by_name.items()}
+    pooled = np.concatenate(list(finite.values()))
+    low, high = (float(value) for value in np.quantile(pooled, quantile_range))
+    edges = np.linspace(low, high, n_bins + 1)
+    for color, (name, values) in zip(GROUP_COLORS, finite.items()):
+        ax.hist(values, bins=edges, density=True, histtype="step", linewidth=LINE_WIDTH, color=color, label=name)
+    ax.set_xlabel(x_label)
+    ax.set_ylabel("density")
+    ax.legend()
     return ax
