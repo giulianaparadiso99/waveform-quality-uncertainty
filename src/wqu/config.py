@@ -72,6 +72,28 @@ class StratifiedComparison:
 
 
 @dataclass(frozen=True)
+class SpatialConfig:
+    """Columns and binning of the source-path and spatial overview."""
+
+    magnitude_column: str
+    distance_column: str
+    year_column: str
+    station_latitude_column: str
+    station_longitude_column: str
+    event_latitude_column: str
+    event_longitude_column: str
+    magnitude_start: float
+    magnitude_stop: float
+    magnitude_step: float
+    distance_start_km: float
+    distance_stop_km: float
+    distance_n_bins: int
+    map_extent_deg: tuple[float, float, float, float] | None
+    map_margin_deg: float
+    show_geography: bool
+
+
+@dataclass(frozen=True)
 class ExplorationConfig:
     """Parameters of the exploratory analysis."""
 
@@ -84,6 +106,7 @@ class ExplorationConfig:
     top_categories: int
     max_discrete_levels: int
     min_stratum_count: int
+    spatial: SpatialConfig
     n_waveform_examples: int
     random_seed: int
 
@@ -220,6 +243,49 @@ def _build_columns_config(section: Mapping[str, Any]) -> ColumnsConfig:
     )
 
 
+def _build_spatial_config(section: Mapping[str, Any]) -> SpatialConfig:
+    """Build and validate the ``exploration.spatial`` section.
+
+    Args:
+        section: Parsed ``exploration.spatial`` mapping.
+
+    Returns:
+        Validated SpatialConfig.
+    """
+    context = "exploration.spatial"
+    magnitude_bins = _require(section, "magnitude_bins", context)
+    raw_extent = section.get("map_extent_deg")
+    if raw_extent is not None and (not isinstance(raw_extent, list) or len(raw_extent) != 4):
+        raise ValueError(f"{context}.map_extent_deg must be null or a list of four numbers.")
+    map_extent = tuple(float(value) for value in raw_extent) if raw_extent is not None else None
+    distance_bins = _require(section, "distance_bins_km", context)
+    spatial = SpatialConfig(
+        magnitude_column=_require(section, "magnitude_column", context),
+        distance_column=_require(section, "distance_column", context),
+        year_column=_require(section, "year_column", context),
+        station_latitude_column=_require(section, "station_latitude_column", context),
+        station_longitude_column=_require(section, "station_longitude_column", context),
+        event_latitude_column=_require(section, "event_latitude_column", context),
+        event_longitude_column=_require(section, "event_longitude_column", context),
+        magnitude_start=float(_require(magnitude_bins, "start", f"{context}.magnitude_bins")),
+        magnitude_stop=float(_require(magnitude_bins, "stop", f"{context}.magnitude_bins")),
+        magnitude_step=float(_require(magnitude_bins, "step", f"{context}.magnitude_bins")),
+        distance_start_km=float(_require(distance_bins, "start", f"{context}.distance_bins_km")),
+        distance_stop_km=float(_require(distance_bins, "stop", f"{context}.distance_bins_km")),
+        distance_n_bins=int(_require(distance_bins, "n_bins", f"{context}.distance_bins_km")),
+        map_extent_deg=map_extent,
+        map_margin_deg=float(_require(section, "map_margin_deg", context)),
+        show_geography=bool(_require(section, "show_geography", context)),
+    )
+    if spatial.magnitude_step <= 0 or spatial.magnitude_stop <= spatial.magnitude_start:
+        raise ValueError(f"{context}.magnitude_bins must have start < stop and a positive step.")
+    if spatial.distance_start_km <= 0 or spatial.distance_stop_km <= spatial.distance_start_km:
+        raise ValueError(f"{context}.distance_bins_km must satisfy 0 < start < stop.")
+    if spatial.distance_n_bins < 1:
+        raise ValueError(f"{context}.distance_bins_km.n_bins must be positive.")
+    return spatial
+
+
 def _build_exploration_config(section: Mapping[str, Any]) -> ExplorationConfig:
     """Build and validate the ``exploration`` section.
 
@@ -271,6 +337,7 @@ def _build_exploration_config(section: Mapping[str, Any]) -> ExplorationConfig:
         top_categories=int(_require(section, "top_categories", "exploration")),
         max_discrete_levels=int(_require(section, "max_discrete_levels", "exploration")),
         min_stratum_count=int(_require(section, "min_stratum_count", "exploration")),
+        spatial=_build_spatial_config(_require(section, "spatial", "exploration")),
         n_waveform_examples=int(_require(section, "n_waveform_examples", "exploration")),
         random_seed=int(_require(section, "random_seed", "exploration")),
     )

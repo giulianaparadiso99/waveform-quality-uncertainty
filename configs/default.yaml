@@ -127,6 +127,25 @@ exploration:
   max_discrete_levels: 20
   # Minimum number of records for a cell of a stratified table to be shown.
   min_stratum_count: 30
+  # Source-path and spatial overview.
+  spatial:
+    magnitude_column: preferred_magnitude
+    distance_column: path_hyp_dist_km
+    year_column: origin_year
+    station_latitude_column: station_latitude_deg
+    station_longitude_column: station_longitude_deg
+    event_latitude_column: source_latitude_deg
+    event_longitude_column: source_longitude_deg
+    # Bins of the magnitude-distance bad-rate map (distance bins are logarithmic).
+    magnitude_bins: {start: 2.0, stop: 8.5, step: 0.25}
+    distance_bins_km: {start: 1.0, stop: 1000.0, n_bins: 24}
+    # Map extent [lon_min, lon_max, lat_min, lat_max] in degrees; null computes it from the data.
+    # ESM25 also contains a few records outside Europe, which would make an automatic extent global.
+    map_extent_deg: [-30.0, 60.0, 25.0, 70.0]
+    # Margin around the data when the map extent is computed automatically.
+    map_margin_deg: 1.0
+    # Draw coastlines and borders (Natural Earth data, downloaded by cartopy on first use).
+    show_geography: true
   # Number of example records per class for waveform inspection.
   n_waveform_examples: 2
   random_seed: 42

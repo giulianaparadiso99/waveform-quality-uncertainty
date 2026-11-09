@@ -11,6 +11,8 @@ from __future__ import annotations
 from collections.abc import Mapping, Sequence
 from pathlib import Path
 
+import cartopy.crs as ccrs
+import cartopy.feature as cfeature
 import matplotlib.pyplot as plt
 import numpy as np
 import pandas as pd
@@ -22,6 +24,9 @@ NEUTRAL_COLOR = "#52514e"
 REFERENCE_LINE_COLOR = "#9a9993"
 PADDING_SHADE_COLOR = "#e6e5e0"
 RATE_COLORMAP = "Oranges"
+MAP_LAND_COLOR = "#f2f1ee"
+MAP_EDGE_COLOR = "#9a9993"
+MAP_POINT_EDGE_COLOR = "#6b6a65"
 LINE_WIDTH = 2.0
 DEFAULT_DPI = 300
 
@@ -249,3 +254,163 @@ def plot_waveform_with_padding(
     figure.suptitle(title, x=0.01, ha="left")
     figure.tight_layout()
     return figure
+
+
+def plot_magnitude_distance_scatter(
+    metadata: pd.DataFrame,
+    distance_column: str,
+    magnitude_column: str,
+    label_column: str,
+    label_names: Mapping[int, str],
+    ax: Axes,
+    point_size: float = 2.0,
+    alpha: float = 0.15,
+) -> Axes:
+    """Scatter plot of magnitude against distance (log scale), colored by label.
+
+    Args:
+        metadata: Combined metadata.
+        distance_column: Distance column (positive values).
+        magnitude_column: Magnitude column.
+        label_column: Label column.
+        label_names: Display name of each label.
+        ax: Axes to draw on.
+        point_size: Marker area.
+        alpha: Marker opacity (low values reveal density).
+
+    Returns:
+        The Axes.
+    """
+    distance = pd.to_numeric(metadata[distance_column], errors="coerce")
+    magnitude = pd.to_numeric(metadata[magnitude_column], errors="coerce")
+    valid = distance.gt(0) & magnitude.notna()
+    for label, name in label_names.items():
+        selected = valid & (metadata[label_column] == label)
+        ax.scatter(
+            distance[selected], magnitude[selected], s=point_size, alpha=alpha,
+            color=LABEL_COLORS[label], linewidths=0, label=f"{name} (n={int(selected.sum()):,})",
+        )
+    ax.set_xscale("log")
+    ax.set_xlabel(distance_column)
+    ax.set_ylabel(magnitude_column)
+    legend = ax.legend(markerscale=4)
+    for handle in legend.legend_handles:
+        handle.set_alpha(1.0)
+    return ax
+
+
+def plot_binned_rate_2d(
+    rates: np.ndarray,
+    x_edges: np.ndarray,
+    y_edges: np.ndarray,
+    ax: Axes,
+    x_label: str,
+    y_label: str,
+    log_x: bool = False,
+) -> Axes:
+    """Map of the bad rate on a two-dimensional grid; empty cells have too few records.
+
+    Args:
+        rates: Array of shape (len(x_edges) - 1, len(y_edges) - 1) from ``binned_bad_rate_2d``.
+        x_edges: Bin edges along x.
+        y_edges: Bin edges along y.
+        ax: Axes to draw on.
+        x_label: Label of the x axis.
+        y_label: Label of the y axis.
+        log_x: Logarithmic x axis.
+
+    Returns:
+        The Axes.
+    """
+    mesh = ax.pcolormesh(x_edges, y_edges, np.ma.masked_invalid(rates.T), cmap=RATE_COLORMAP, vmin=0.0, vmax=1.0)
+    if log_x:
+        ax.set_xscale("log")
+    ax.set_xlabel(x_label)
+    ax.set_ylabel(y_label)
+    ax.grid(visible=False)
+    ax.figure.colorbar(mesh, ax=ax, label="fraction of bad records")
+    return ax
+
+
+def create_map_axes(
+    figure: Figure, subplot_position: int, extent: tuple[float, float, float, float], show_geography: bool
+) -> Axes:
+    """Add a geographic Axes (Plate Carree) with optional land, coastlines and borders.
+
+    Args:
+        figure: Figure receiving the Axes.
+        subplot_position: Three-digit Matplotlib subplot code (e.g. 211).
+        extent: (lon_min, lon_max, lat_min, lat_max).
+        show_geography: Draw land, coastlines and borders (Natural Earth data).
+
+    Returns:
+        The cartopy GeoAxes.
+    """
+    ax = figure.add_subplot(subplot_position, projection=ccrs.PlateCarree())
+    ax.set_extent(extent, crs=ccrs.PlateCarree())
+    if show_geography:
+        ax.add_feature(cfeature.LAND, facecolor=MAP_LAND_COLOR, edgecolor="none")
+        ax.add_feature(cfeature.COASTLINE, edgecolor=MAP_EDGE_COLOR, linewidth=0.5)
+        ax.add_feature(cfeature.BORDERS, edgecolor=MAP_EDGE_COLOR, linewidth=0.3)
+    gridlines = ax.gridlines(draw_labels=True, linewidth=0.3, color=MAP_EDGE_COLOR, alpha=0.5)
+    gridlines.top_labels = False
+    gridlines.right_labels = False
+    return ax
+
+
+def plot_rate_map(
+    table: pd.DataFrame,
+    longitude_column: str,
+    latitude_column: str,
+    ax: Axes,
+    title: str,
+    size_range: tuple[float, float] = (3.0, 120.0),
+) -> Axes:
+    """Points on a map colored by bad rate and sized by number of records.
+
+    Larger groups are drawn first so that small groups remain visible.
+
+    Args:
+        table: Output of ``group_bad_rate`` with coordinate columns.
+        longitude_column: Longitude column of ``table``.
+        latitude_column: Latitude column of ``table``.
+        ax: GeoAxes from ``create_map_axes``.
+        title: Axes title.
+        size_range: Marker areas of the smallest and largest group.
+
+    Returns:
+        The Axes.
+    """
+    ordered = table.dropna(subset=[longitude_column, latitude_column]).sort_values("n_records", ascending=False)
+    root_counts = np.sqrt(ordered["n_records"].to_numpy(dtype=float))
+    span = max(root_counts.max() - root_counts.min(), 1e-9)
+    sizes = size_range[0] + (root_counts - root_counts.min()) / span * (size_range[1] - size_range[0])
+    points = ax.scatter(
+        ordered[longitude_column], ordered[latitude_column], s=sizes, c=ordered["bad_rate"],
+        cmap=RATE_COLORMAP, vmin=0.0, vmax=1.0, edgecolors=MAP_POINT_EDGE_COLOR, linewidths=0.2,
+        transform=ccrs.PlateCarree(),
+    )
+    ax.set_title(f"{title} (n={len(ordered):,}; marker area ~ number of records)", loc="left")
+    ax.figure.colorbar(points, ax=ax, label="fraction of bad records", shrink=0.8)
+    return ax
+
+
+def plot_records_per_year(table: pd.DataFrame, label_names: Mapping[int, str], ax: Axes) -> Axes:
+    """Number of records per year for each label.
+
+    Args:
+        table: Output of ``records_per_year_by_label``.
+        label_names: Display name of each label.
+        ax: Axes to draw on.
+
+    Returns:
+        The Axes.
+    """
+    for label, name in label_names.items():
+        if label in table.columns:
+            ax.step(table.index, table[label], where="mid", linewidth=LINE_WIDTH,
+                    color=LABEL_COLORS[label], label=name)
+    ax.set_xlabel("year")
+    ax.set_ylabel("number of records")
+    ax.legend()
+    return ax
