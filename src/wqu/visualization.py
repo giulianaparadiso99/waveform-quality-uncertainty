@@ -20,6 +20,8 @@ from matplotlib.axes import Axes
 from matplotlib.figure import Figure
 
 LABEL_COLORS: Mapping[int, str] = {0: "#2a78d6", 1: "#eb6834"}
+# Categorical colors for groups other than the two classes (fixed order, never cycled).
+GROUP_COLORS: tuple[str, ...] = ("#1baf7a", "#eda100", "#e87ba4", "#008300")
 NEUTRAL_COLOR = "#52514e"
 REFERENCE_LINE_COLOR = "#9a9993"
 PADDING_SHADE_COLOR = "#e6e5e0"
@@ -413,4 +415,31 @@ def plot_records_per_year(table: pd.DataFrame, label_names: Mapping[int, str], a
     ax.set_xlabel("year")
     ax.set_ylabel("number of records")
     ax.legend()
+    return ax
+
+
+def plot_mean_spectra(mean_log_psd: pd.DataFrame, counts: pd.Series, ax: Axes) -> Axes:
+    """Mean power spectra per original sampling rate, with each Nyquist frequency marked.
+
+    Args:
+        mean_log_psd: Mean log10 PSD, frequencies x groups (original sampling rates in Hz).
+        counts: Number of averaged spectra per group.
+        ax: Axes to draw on.
+
+    Returns:
+        The Axes.
+    """
+    if mean_log_psd.shape[1] > len(GROUP_COLORS):
+        raise ValueError(f"At most {len(GROUP_COLORS)} groups can be drawn, got {mean_log_psd.shape[1]}.")
+    positive = mean_log_psd.index > 0
+    for color, group in zip(GROUP_COLORS, mean_log_psd.columns):
+        ax.plot(
+            mean_log_psd.index[positive], mean_log_psd.loc[positive, group], color=color,
+            linewidth=LINE_WIDTH, label=f"{group:g} Hz (n={int(counts[group]):,})",
+        )
+        ax.axvline(group / 2.0, color=color, linewidth=1.0, linestyle=":")
+    ax.set_xscale("log")
+    ax.set_xlabel("frequency [Hz] (dotted: original Nyquist frequency)")
+    ax.set_ylabel("mean log10 PSD")
+    ax.legend(title="original sampling rate")
     return ax

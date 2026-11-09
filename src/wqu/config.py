@@ -15,6 +15,7 @@ from typing import Any
 import yaml
 
 VALID_DATA_SOURCES: tuple[str, ...] = ("seisbench", "local_csv")
+VALID_WAVEFORM_SOURCES: tuple[str, ...] = ("dev_subset", "seisbench")
 REQUIRED_LABELS: frozenset[int] = frozenset({0, 1})
 
 
@@ -24,6 +25,7 @@ class SubsetConfig:
 
     name: str
     seisbench_class: str
+    repository_name: str
     local_metadata_file: str
     label: int
 
@@ -112,6 +114,25 @@ class ExplorationConfig:
 
 
 @dataclass(frozen=True)
+class WaveformConfig:
+    """Source and parameters of the waveform inspection."""
+
+    source: str
+    remote_url_template: str
+    dev_subset_file: Path
+    dev_subset_records_file: Path
+    dev_subset_records_per_class: int
+    dev_subset_max_records_per_event: int
+    inspection_records_per_class: int | None
+    batch_size: int
+    zero_tolerance: float
+    min_internal_gap_s: float
+    spectrum_segment_s: float
+    spectrum_top_sampling_rates: int
+    random_seed: int
+
+
+@dataclass(frozen=True)
 class OutputConfig:
     """Output directories for figures and tables."""
 
@@ -126,6 +147,7 @@ class ProjectConfig:
     data: DataConfig
     columns: ColumnsConfig
     exploration: ExplorationConfig
+    waveforms: WaveformConfig
     output: OutputConfig
 
 
@@ -194,6 +216,7 @@ def _build_data_config(section: Mapping[str, Any], project_root: Path) -> DataCo
         SubsetConfig(
             name=_require(entry, "name", "data.subsets"),
             seisbench_class=_require(entry, "seisbench_class", "data.subsets"),
+            repository_name=_require(entry, "repository_name", "data.subsets"),
             local_metadata_file=_require(entry, "local_metadata_file", "data.subsets"),
             label=int(_require(entry, "label", "data.subsets")),
         )
@@ -343,6 +366,52 @@ def _build_exploration_config(section: Mapping[str, Any]) -> ExplorationConfig:
     )
 
 
+def _build_waveform_config(section: Mapping[str, Any], project_root: Path) -> WaveformConfig:
+    """Build and validate the ``waveforms`` section.
+
+    Args:
+        section: Parsed ``waveforms`` mapping.
+        project_root: Base directory for relative paths.
+
+    Returns:
+        Validated WaveformConfig.
+    """
+    source = _require(section, "source", "waveforms")
+    if source not in VALID_WAVEFORM_SOURCES:
+        raise ValueError(f"waveforms.source must be one of {VALID_WAVEFORM_SOURCES}, got '{source}'.")
+    template = _require(section, "remote_url_template", "waveforms")
+    if "{repository_name}" not in template:
+        raise ValueError("waveforms.remote_url_template must contain '{repository_name}'.")
+    inspection_records = section.get("inspection_records_per_class")
+    waveforms = WaveformConfig(
+        source=source,
+        remote_url_template=template,
+        dev_subset_file=_resolve_path(_require(section, "dev_subset_file", "waveforms"), project_root),
+        dev_subset_records_file=_resolve_path(_require(section, "dev_subset_records_file", "waveforms"), project_root),
+        dev_subset_records_per_class=int(_require(section, "dev_subset_records_per_class", "waveforms")),
+        dev_subset_max_records_per_event=int(_require(section, "dev_subset_max_records_per_event", "waveforms")),
+        inspection_records_per_class=int(inspection_records) if inspection_records is not None else None,
+        batch_size=int(_require(section, "batch_size", "waveforms")),
+        zero_tolerance=float(_require(section, "zero_tolerance", "waveforms")),
+        min_internal_gap_s=float(_require(section, "min_internal_gap_s", "waveforms")),
+        spectrum_segment_s=float(_require(section, "spectrum_segment_s", "waveforms")),
+        spectrum_top_sampling_rates=int(_require(section, "spectrum_top_sampling_rates", "waveforms")),
+        random_seed=int(_require(section, "random_seed", "waveforms")),
+    )
+    positive = {
+        "dev_subset_records_per_class": waveforms.dev_subset_records_per_class,
+        "dev_subset_max_records_per_event": waveforms.dev_subset_max_records_per_event,
+        "batch_size": waveforms.batch_size,
+        "spectrum_top_sampling_rates": waveforms.spectrum_top_sampling_rates,
+    }
+    non_positive = [name for name, value in positive.items() if value < 1]
+    if non_positive:
+        raise ValueError(f"waveforms entries must be positive: {non_positive}.")
+    if waveforms.zero_tolerance < 0 or waveforms.min_internal_gap_s <= 0 or waveforms.spectrum_segment_s <= 0:
+        raise ValueError("waveforms.zero_tolerance must be >= 0; min_internal_gap_s and spectrum_segment_s > 0.")
+    return waveforms
+
+
 def _build_output_config(section: Mapping[str, Any], project_root: Path) -> OutputConfig:
     """Build the ``output`` section.
 
@@ -388,6 +457,7 @@ def load_config(config_path: str | Path, project_root: str | Path | None = None)
         data=_build_data_config(_require(raw, "data", "root"), root),
         columns=_build_columns_config(_require(raw, "columns", "root")),
         exploration=_build_exploration_config(_require(raw, "exploration", "root")),
+        waveforms=_build_waveform_config(_require(raw, "waveforms", "root"), root),
         output=_build_output_config(_require(raw, "output", "root"), root),
     )
 

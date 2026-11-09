@@ -18,10 +18,12 @@ data:
   subsets:
     - name: good
       seisbench_class: ESM25GoodCV
+      repository_name: esm25goodcv
       local_metadata_file: metadata_goodcv.csv
       label: 0
     - name: bad
       seisbench_class: ESM25BadCV
+      repository_name: esm25badcv
       local_metadata_file: metadata_badcv.csv
       label: 1
 
@@ -148,6 +150,33 @@ exploration:
     show_geography: true
   # Number of example records per class for waveform inspection.
   n_waveform_examples: 2
+  random_seed: 42
+
+waveforms:
+  # Where the waveform inspection reads the traces:
+  # "dev_subset": local development subset built from traces read on the SeisBench server
+  #               (HTTP range requests, no full download needed);
+  # "seisbench":  full datasets in the SeisBench cache (after the complete download).
+  source: dev_subset
+  # Remote waveform file of a dataset; {repository_name} is replaced per subset.
+  remote_url_template: https://hifis-storage.desy.de/Helmholtz/HelmholtzAI/SeisBench/datasets/{repository_name}/waveforms.hdf5
+  dev_subset_file: data/dev_subset/waveforms.h5
+  dev_subset_records_file: data/dev_subset/records.csv
+  dev_subset_records_per_class: 1000
+  # Records drawn from the same event, at most (more events = more variety).
+  dev_subset_max_records_per_event: 1
+  # Records per class used by the inspection; null uses every record of the source.
+  inspection_records_per_class: null
+  # Number of traces read and analysed together.
+  batch_size: 128
+  # Absolute amplitude at or below which a sample counts as zero (0.0 = exact zeros only).
+  zero_tolerance: 0.0
+  # Shortest run of zeros inside the recorded signal reported as a data gap.
+  min_internal_gap_s: 0.5
+  # Welch spectra used to compare traces by original sampling rate.
+  spectrum_segment_s: 20.48
+  # Number of original sampling rates shown in the spectrum comparison (most frequent first).
+  spectrum_top_sampling_rates: 4
   random_seed: 42
 
 output:
