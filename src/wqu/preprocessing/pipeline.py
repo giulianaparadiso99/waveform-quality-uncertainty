@@ -17,7 +17,6 @@ import pandas as pd
 from tqdm.auto import tqdm
 
 from wqu.config import PreprocessingConfig
-from wqu.data.inspection import edge_zero_samples
 from wqu.data.loading import CV_COMPONENTS
 from wqu.preprocessing.transform import (
     TimeFrequencyGrid,
@@ -30,8 +29,7 @@ from wqu.preprocessing.transform import (
 from wqu.preprocessing.windowing import (
     WindowBounds,
     extract_segment,
-    pga_sample,
-    remove_recorded_mean,
+    prepare_trace,
     resample_segment,
     taper_segment,
     window_bounds,
@@ -88,12 +86,11 @@ def locate_window(
     Returns:
         Tuple (mean-removed trace, window bounds, window statistics).
     """
-    leading, trailing = edge_zero_samples(trace[None], tolerance)
-    centred = remove_recorded_mean(trace, leading[0], trailing[0])
+    prepared = prepare_trace(trace, tolerance)
     bounds = window_bounds(
-        pga_sample(centred), sampling_rate_hz, config.pre_pga_s, config.post_pga_s, config.context_margin_s
+        prepared.pga_index, sampling_rate_hz, config.pre_pga_s, config.post_pga_s, config.context_margin_s
     )
-    return centred, bounds, window_cut_statistics(centred, bounds, tolerance, sampling_rate_hz)
+    return prepared.centred, bounds, window_cut_statistics(prepared.centred, bounds, tolerance, sampling_rate_hz)
 
 
 def process_record(
@@ -242,7 +239,7 @@ def preprocess_and_store(
         output.create_dataset("frequencies_hz", data=grid.frequencies_hz)
         output.create_dataset("times_s", data=grid.times_s)
         for key, value in asdict(config).items():
-            if not isinstance(value, Path):
+            if isinstance(value, (bool, int, float, str)):
                 output.attrs[key] = value
         with tqdm(total=len(records), desc="preprocessing") as progress:
             for batch, traces in batches:

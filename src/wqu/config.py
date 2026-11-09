@@ -17,6 +17,7 @@ import yaml
 
 VALID_DATA_SOURCES: tuple[str, ...] = ("seisbench", "local_csv")
 VALID_WAVEFORM_SOURCES: tuple[str, ...] = ("dev_subset", "seisbench")
+VALID_ENERGY_CRITERIA: tuple[str, ...] = ("quantile", "share_above")
 REQUIRED_LABELS: frozenset[int] = frozenset({0, 1})
 
 
@@ -134,6 +135,34 @@ class WaveformConfig:
 
 
 @dataclass(frozen=True)
+class WindowSearchConfig:
+    """Grid search over the analysis window around the PGA.
+
+    Attributes:
+        pre_pga_s: Candidate lengths before the PGA.
+        post_pga_s: Candidate lengths after the PGA.
+        max_padding_separation: Largest accepted separation (max of AUC and 1 - AUC)
+            between the classes of the zero padding contained in the window.
+        energy_reference_label: Label of the records on which the energy kept is measured.
+        energy_criterion: ``quantile`` (a quantile of the energy fraction kept) or
+            ``share_above`` (share of records keeping at least ``min_energy_fraction``).
+        energy_quantile: Quantile used by the ``quantile`` criterion.
+        min_energy_fraction: Threshold used by the ``share_above`` criterion.
+        score_tolerance: Feasible windows whose energy score is within this amount of the
+            best are considered equivalent; the shortest of them is selected.
+    """
+
+    pre_pga_s: tuple[float, ...]
+    post_pga_s: tuple[float, ...]
+    max_padding_separation: float
+    energy_reference_label: int
+    energy_criterion: str
+    energy_quantile: float
+    min_energy_fraction: float
+    score_tolerance: float
+
+
+@dataclass(frozen=True)
 class PreprocessingConfig:
     """Parameters of the waveform-to-image preprocessing."""
 
@@ -153,6 +182,7 @@ class PreprocessingConfig:
     morlet_w0: float
     reference_power: float
     floor_power: float
+    window_search: WindowSearchConfig
     n_distribution_records: int
     n_png_records_per_class: int
     output_dir: Path
@@ -456,6 +486,65 @@ def _build_waveform_config(section: Mapping[str, Any], project_root: Path) -> Wa
     return waveforms
 
 
+def _as_positive_float_tuple(values: Any, context: str) -> tuple[float, ...]:
+    """Convert a YAML list of numbers into a sorted tuple of unique non-negative floats.
+
+    Args:
+        values: Parsed YAML value.
+        context: Entry name used in the error message.
+
+    Returns:
+        Sorted tuple of unique floats.
+    """
+    if not isinstance(values, list) or not values:
+        raise TypeError(f"Configuration entry '{context}' must be a non-empty list of numbers.")
+    converted = sorted({float(value) for value in values})
+    if converted[0] < 0:
+        raise ValueError(f"Configuration entry '{context}' must contain non-negative values.")
+    return tuple(converted)
+
+
+def _build_window_search_config(section: Mapping[str, Any]) -> WindowSearchConfig:
+    """Build and validate the ``preprocessing.window_search`` section.
+
+    Args:
+        section: Parsed ``window_search`` mapping.
+
+    Returns:
+        Validated WindowSearchConfig.
+    """
+    context = "preprocessing.window_search"
+    energy = _require(section, "energy", context)
+    config = WindowSearchConfig(
+        pre_pga_s=_as_positive_float_tuple(_require(section, "pre_pga_s", context), f"{context}.pre_pga_s"),
+        post_pga_s=_as_positive_float_tuple(_require(section, "post_pga_s", context), f"{context}.post_pga_s"),
+        max_padding_separation=float(_require(section, "max_padding_separation", context)),
+        energy_reference_label=int(_require(energy, "reference_label", f"{context}.energy")),
+        energy_criterion=str(_require(energy, "criterion", f"{context}.energy")),
+        energy_quantile=float(_require(energy, "quantile", f"{context}.energy")),
+        min_energy_fraction=float(_require(energy, "min_fraction", f"{context}.energy")),
+        score_tolerance=float(_require(section, "score_tolerance", context)),
+    )
+    problems = []
+    if not 0.5 <= config.max_padding_separation <= 1.0:
+        problems.append("max_padding_separation must be in [0.5, 1]")
+    if config.energy_reference_label not in REQUIRED_LABELS:
+        problems.append(f"energy.reference_label must be one of {sorted(REQUIRED_LABELS)}")
+    if config.energy_criterion not in VALID_ENERGY_CRITERIA:
+        problems.append(f"energy.criterion must be one of {VALID_ENERGY_CRITERIA}")
+    if not 0.0 <= config.energy_quantile <= 1.0:
+        problems.append("energy.quantile must be in [0, 1]")
+    if not 0.0 < config.min_energy_fraction <= 1.0:
+        problems.append("energy.min_fraction must be in (0, 1]")
+    if config.score_tolerance < 0:
+        problems.append("score_tolerance must be non-negative")
+    if min(config.post_pga_s) <= 0:
+        problems.append("post_pga_s values must be positive")
+    if problems:
+        raise ValueError(f"Invalid {context} configuration: " + "; ".join(problems) + ".")
+    return config
+
+
 def _build_preprocessing_config(section: Mapping[str, Any], project_root: Path) -> PreprocessingConfig:
     """Build and validate the ``preprocessing`` section.
 
@@ -494,6 +583,7 @@ def _build_preprocessing_config(section: Mapping[str, Any], project_root: Path) 
         morlet_w0=float(_require(cwt, "morlet_w0", f"{context}.cwt")),
         reference_power=float(_require(decibel, "reference_power", f"{context}.decibel")),
         floor_power=float(_require(decibel, "floor_power", f"{context}.decibel")),
+        window_search=_build_window_search_config(_require(section, "window_search", context)),
         n_distribution_records=int(_require(section, "n_distribution_records", context)),
         n_png_records_per_class=int(_require(section, "n_png_records_per_class", context)),
         output_dir=_resolve_path(_require(section, "output_dir", context), project_root),

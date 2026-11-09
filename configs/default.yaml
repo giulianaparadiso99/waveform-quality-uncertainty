@@ -189,6 +189,29 @@ preprocessing:
     context_margin_s: 20.0
     # Fraction of the analysed segment (window plus margins) tapered at each end (Tukey window).
     taper_fraction: 0.05
+  # Grid search over the window (notebook 02): the suggested values are printed, the window used
+  # by the preprocessing is always the one in `window` above.
+  window_search:
+    pre_pga_s: [10, 20, 30, 40, 50, 60]
+    post_pga_s: [30, 45, 60, 90, 120, 150, 180, 240]
+    # Leakage criterion: the zero padding inside the window (before the PGA, after the PGA, total;
+    # seconds on the worst component) must not separate the classes. Separation = max(AUC, 1 - AUC),
+    # 0.5 = no information. A window is accepted when all three separations are at most this value.
+    max_padding_separation: 0.55
+    # Signal-loss criterion: fraction of the energy (sum of squared amplitudes over the three
+    # components) of the stored trace that falls inside the window.
+    energy:
+      # Records on which the energy kept is measured (0 = good: in bad records much of the energy
+      # can be noise outside the event, so their energy kept is not a measure of a good window).
+      reference_label: 0
+      # quantile: the `quantile`-th quantile of the energy fraction kept (0.1 = kept by 90% of records);
+      # share_above: share of records keeping at least `min_fraction` of their energy.
+      criterion: quantile
+      quantile: 0.1
+      min_fraction: 0.95
+    # Among accepted windows, those within this amount of the best energy score are equivalent:
+    # the shortest one is suggested.
+    score_tolerance: 0.005
   resampling:
     target_sampling_rate_hz: 100.0
     # Zero-phase Butterworth low-pass applied before resampling.

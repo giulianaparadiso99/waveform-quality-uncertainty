@@ -600,3 +600,128 @@ def plot_value_distributions(
     ax.set_ylabel("density")
     ax.legend()
     return ax
+
+
+WINDOW_MARKER_STYLES: Mapping[str, str] = {"suggested": "-", "configured": "--"}
+REJECTED_HATCH = "///"
+WINDOW_LENGTH_COLORMAP = "Blues"
+
+
+def _grid_position(values: np.ndarray, value: float) -> int:
+    """Position of a value in a sorted axis of the window grid.
+
+    Args:
+        values: Axis values.
+        value: Value to locate.
+
+    Returns:
+        Position in ``values``.
+
+    Raises:
+        KeyError: If the value is not on the axis.
+    """
+    matches = np.flatnonzero(np.isclose(values, value))
+    if matches.size == 0:
+        raise KeyError(f"Value {value} is not on the grid axis {values.tolist()}.")
+    return int(matches[0])
+
+
+def plot_window_grid_heatmap(
+    summary: pd.DataFrame,
+    value_column: str,
+    ax: Axes,
+    title: str,
+    colormap: str,
+    value_format: str,
+    marked_windows: Mapping[str, tuple[float, float]],
+) -> Axes:
+    """Heatmap of a window-search measure over (pre_pga_s, post_pga_s).
+
+    Rejected windows (``accepted`` false) are hatched; the windows in
+    ``marked_windows`` are outlined (solid for ``suggested``, dashed otherwise).
+
+    Args:
+        summary: Output of ``summarize_window_grid``.
+        value_column: Column to show.
+        ax: Axes to draw on.
+        title: Axes title.
+        colormap: Matplotlib colormap name.
+        value_format: Format of the cell annotations (e.g. ``.3f``).
+        marked_windows: Mapping from a name to (pre_pga_s, post_pga_s).
+
+    Returns:
+        The Axes.
+    """
+    table = summary.pivot(index="pre_pga_s", columns="post_pga_s", values=value_column)
+    accepted = summary.pivot(index="pre_pga_s", columns="post_pga_s", values="accepted").astype(bool)
+    pre_values, post_values = table.index.to_numpy(), table.columns.to_numpy()
+    image = ax.imshow(table.to_numpy(), cmap=colormap, aspect="auto", origin="lower")
+    ax.figure.colorbar(image, ax=ax, label=value_column)
+    values = table.to_numpy()
+    threshold = np.nanmean(values)
+    for row in range(len(pre_values)):
+        for column in range(len(post_values)):
+            ax.text(column, row, format(values[row, column], value_format), ha="center", va="center", fontsize=7,
+                    color="white" if values[row, column] > threshold else WINDOW_TRACE_COLOR)
+            if not accepted.iloc[row, column]:
+                ax.add_patch(plt.Rectangle((column - 0.5, row - 0.5), 1, 1, fill=False, hatch=REJECTED_HATCH,
+                                           edgecolor=REFERENCE_LINE_COLOR, linewidth=0))
+    for name, (pre, post) in marked_windows.items():
+        if np.isclose(pre_values, pre).any() and np.isclose(post_values, post).any():
+            ax.add_patch(plt.Rectangle(
+                (_grid_position(post_values, post) - 0.5, _grid_position(pre_values, pre) - 0.5), 1, 1, fill=False,
+                edgecolor="black", linewidth=2.0, linestyle=WINDOW_MARKER_STYLES.get(name, ":"), label=name,
+            ))
+    ax.set_xticks(range(len(post_values)), [f"{value:g}" for value in post_values])
+    ax.set_yticks(range(len(pre_values)), [f"{value:g}" for value in pre_values])
+    ax.set_xlabel("post_pga_s [s]")
+    ax.set_ylabel("pre_pga_s [s]")
+    ax.set_title(title, loc="left")
+    ax.grid(False)
+    return ax
+
+
+def plot_window_tradeoff(
+    summary: pd.DataFrame,
+    pareto: pd.Series,
+    max_padding_separation: float,
+    marked_windows: Mapping[str, tuple[float, float]],
+    ax: Axes,
+) -> Axes:
+    """Padding separation against energy score for every candidate window.
+
+    Points are coloured by window length; the Pareto front is joined by a line,
+    the dashed vertical line is the accepted padding separation, and the windows
+    in ``marked_windows`` are circled and labelled.
+
+    Args:
+        summary: Output of ``summarize_window_grid``.
+        pareto: Boolean Series marking the Pareto front (see ``pareto_front``).
+        max_padding_separation: Accepted padding separation.
+        marked_windows: Mapping from a name to (pre_pga_s, post_pga_s).
+        ax: Axes to draw on.
+
+    Returns:
+        The Axes.
+    """
+    points = ax.scatter(summary["padding_separation"], summary["energy_score"], c=summary["window_length_s"],
+                        cmap=WINDOW_LENGTH_COLORMAP, edgecolors=NEUTRAL_COLOR, linewidths=0.5, s=40)
+    ax.figure.colorbar(points, ax=ax, label="window length [s]")
+    front = summary[pareto].sort_values("padding_separation")
+    (front_line,) = ax.plot(front["padding_separation"], front["energy_score"], color=NEUTRAL_COLOR, linewidth=1.0,
+                            label="Pareto front")
+    threshold_line = ax.axvline(max_padding_separation, color=REFERENCE_LINE_COLOR, linestyle="--", linewidth=1.0,
+                                label="max_padding_separation")
+    for name, (pre, post) in marked_windows.items():
+        match = summary[np.isclose(summary["pre_pga_s"], pre) & np.isclose(summary["post_pga_s"], post)]
+        if match.empty:
+            continue
+        row = match.iloc[0]
+        ax.scatter(row["padding_separation"], row["energy_score"], s=160, facecolors="none", edgecolors="black",
+                   linewidths=1.5, linestyle=WINDOW_MARKER_STYLES.get(name, ":"))
+        ax.annotate(f"{name} ({pre:g}, {post:g})", (row["padding_separation"], row["energy_score"]),
+                    xytext=(8, -12), textcoords="offset points", fontsize=8)
+    ax.set_xlabel("padding separation (max of AUC, 1 - AUC)")
+    ax.set_ylabel("energy score")
+    ax.legend(handles=[front_line, threshold_line], loc="best")
+    return ax

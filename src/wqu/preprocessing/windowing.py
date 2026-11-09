@@ -20,6 +20,7 @@ import numpy as np
 from scipy.signal import butter, resample_poly, sosfiltfilt
 from scipy.signal.windows import tukey
 
+from wqu.data.inspection import edge_zero_samples
 from wqu.data.loading import CV_COMPONENTS
 
 RESAMPLING_MAX_DENOMINATOR = 1000
@@ -45,6 +46,38 @@ class WindowBounds:
     window_stop: int
     segment_start: int
     segment_stop: int
+
+
+@dataclass(frozen=True)
+class PreparedTrace:
+    """Mean-removed trace with its zero padding and PGA sample.
+
+    Attributes:
+        centred: Trace after removal of the mean of the recorded samples, shape (components, samples).
+        leading: Zero samples at the start of each component.
+        trailing: Zero samples at the end of each component.
+        pga_index: Sample of the peak absolute acceleration over all components.
+    """
+
+    centred: np.ndarray
+    leading: np.ndarray
+    trailing: np.ndarray
+    pga_index: int
+
+
+def prepare_trace(trace: np.ndarray, tolerance: float) -> PreparedTrace:
+    """Find the zero padding, remove the recorded mean and locate the PGA.
+
+    Args:
+        trace: Stored trace, shape (components, samples).
+        tolerance: Zero threshold used to find the zero padding.
+
+    Returns:
+        PreparedTrace.
+    """
+    leading, trailing = edge_zero_samples(trace[None], tolerance)
+    centred = remove_recorded_mean(trace, leading[0], trailing[0])
+    return PreparedTrace(centred=centred, leading=leading[0], trailing=trailing[0], pga_index=pga_sample(centred))
 
 
 def remove_recorded_mean(traces: np.ndarray, leading: np.ndarray, trailing: np.ndarray) -> np.ndarray:
