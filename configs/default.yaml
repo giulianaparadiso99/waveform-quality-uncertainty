@@ -310,6 +310,10 @@ model:
     head: 0.5
   # Stochastic forward passes for MC dropout predictions.
   mc_samples: 50
+  # Grad-CAM (Captum) on the last convolutional layer, maps for both classes over MC dropout passes.
+  grad_cam:
+    mc_samples: 20
+    records_per_class: 1
   figures_dir: outputs/figures/04_model
   tables_dir: outputs/tables/04_model
 

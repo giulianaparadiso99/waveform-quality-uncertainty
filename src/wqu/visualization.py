@@ -862,3 +862,104 @@ def save_figures_pdf(figures: Iterable[Figure], path: Path) -> Path:
             pdf.savefig(figure, bbox_inches="tight")
             plt.close(figure)
     return path
+
+
+GRAD_CAM_CLASS_LABELS: Mapping[str, int] = {"good": 0, "bad": 1}
+GRAD_CAM_MAP_COLORMAPS: Mapping[str, str] = {"good": "Blues", "bad": "Oranges"}
+GRAD_CAM_STD_COLORMAP = "Greys"
+GRAD_CAM_BACKGROUND_COLORMAP = "Greys"
+GRAD_CAM_CONTOUR_FRACTIONS: tuple[float, ...] = (0.5, 0.8)
+
+
+def _draw_frequency_time_map(
+    values: np.ndarray, frequency_edges_hz: np.ndarray, times_s: np.ndarray, ax: Axes, colormap: str, title: str
+) -> None:
+    """Draw a frequency-time map with a logarithmic frequency axis and a colour bar.
+
+    Args:
+        values: Array of shape (frequencies, times).
+        frequency_edges_hz: Band edges (frequencies + 1 values).
+        times_s: Time-bin centres (equally spaced).
+        ax: Axes to draw on.
+        colormap: Matplotlib colormap name.
+        title: Axes title.
+    """
+    step = times_s[1] - times_s[0]
+    time_edges = np.concatenate((times_s - step / 2, [times_s[-1] + step / 2]))
+    mesh = ax.pcolormesh(time_edges, frequency_edges_hz, values, cmap=colormap, shading="flat")
+    ax.figure.colorbar(mesh, ax=ax)
+    ax.set_yscale("log")
+    ax.grid(visible=False)
+    ax.set_title(title, loc="left", fontsize=9)
+
+
+def plot_grad_cam(
+    image_db: np.ndarray,
+    frequencies_hz: np.ndarray,
+    frequency_edges_hz: np.ndarray,
+    times_s: np.ndarray,
+    maps: Mapping[str, tuple[np.ndarray, np.ndarray]],
+    window_waveform: np.ndarray,
+    waveform_rate_hz: float,
+    components: Sequence[str],
+    title: str,
+) -> Figure:
+    """Grad-CAM maps of both classes over the time-frequency image and the waveform of a record.
+
+    Top: input image (mean over components, grey) with contours of the mean map of each
+    class at ``GRAD_CAM_CONTOUR_FRACTIONS`` of its maximum. Middle: mean and MC dropout
+    standard deviation of the map of each class. Bottom: waveform of the window with the
+    mean over frequencies of each mean map (right axis).
+
+    Args:
+        image_db: Input representation in decibels, shape (components, frequencies, times).
+        frequencies_hz: Centre frequencies of the grid.
+        frequency_edges_hz: Band edges of the grid.
+        times_s: Time-bin centres of the grid (seconds from the window start).
+        maps: Mapping from class name (``good``, ``bad``) to (mean map, std map), each (frequencies, times).
+        window_waveform: Waveform of the window, shape (components, samples).
+        waveform_rate_hz: Sampling rate of the waveform.
+        components: Component names.
+        title: Figure title.
+
+    Returns:
+        The Figure.
+    """
+    figure = plt.figure(figsize=(12, 10), constrained_layout=True)
+    layout = figure.add_gridspec(3, 2 * len(maps), height_ratios=[1.2, 1.0, 1.0])
+    top = figure.add_subplot(layout[0, :])
+    _draw_frequency_time_map(image_db.mean(axis=0), frequency_edges_hz, times_s, top, GRAD_CAM_BACKGROUND_COLORMAP,
+                             "input (mean over components, dB) with Grad-CAM contours")
+    handles = []
+    for class_name, (mean_map, _) in maps.items():
+        color = LABEL_COLORS[GRAD_CAM_CLASS_LABELS[class_name]]
+        levels = [fraction * float(mean_map.max()) for fraction in GRAD_CAM_CONTOUR_FRACTIONS]
+        if levels[-1] > 0:
+            top.contour(times_s, frequencies_hz, mean_map, levels=levels, colors=color, linewidths=1.2)
+        handles.append(plt.Line2D([], [], color=color, label=f"{class_name} map"))
+    top.legend(handles=handles, loc="upper right", fontsize=8)
+    top.set_ylabel("frequency [Hz]")
+    for position, (class_name, (mean_map, std_map)) in enumerate(maps.items()):
+        mean_ax = figure.add_subplot(layout[1, 2 * position])
+        std_ax = figure.add_subplot(layout[1, 2 * position + 1])
+        _draw_frequency_time_map(mean_map, frequency_edges_hz, times_s, mean_ax, GRAD_CAM_MAP_COLORMAPS[class_name],
+                                 f"{class_name}: MC mean")
+        _draw_frequency_time_map(std_map, frequency_edges_hz, times_s, std_ax, GRAD_CAM_STD_COLORMAP,
+                                 f"{class_name}: MC std")
+    bottom = figure.add_subplot(layout[2, :])
+    waveform_time_s = np.arange(window_waveform.shape[-1]) / waveform_rate_hz
+    offset = 2.5 * float(np.max(np.abs(window_waveform))) or 1.0
+    for position, (component, values) in enumerate(zip(components, window_waveform)):
+        bottom.plot(waveform_time_s, values - position * offset, color=WINDOW_TRACE_COLOR, linewidth=0.5)
+    bottom.set_yticks([-position * offset for position in range(len(components))], list(components))
+    bottom.set_xlim(waveform_time_s[0], waveform_time_s[-1])
+    bottom.set_xlabel("time from window start [s]")
+    profile_ax = bottom.twinx()
+    for class_name, (mean_map, _) in maps.items():
+        profile_ax.plot(times_s, mean_map.mean(axis=0), color=LABEL_COLORS[GRAD_CAM_CLASS_LABELS[class_name]],
+                        linewidth=LINE_WIDTH, label=f"{class_name} map (mean over frequencies)")
+    profile_ax.set_ylabel("Grad-CAM")
+    profile_ax.grid(visible=False)
+    profile_ax.legend(loc="upper right", fontsize=8)
+    figure.suptitle(title, x=0.01, ha="left")
+    return figure

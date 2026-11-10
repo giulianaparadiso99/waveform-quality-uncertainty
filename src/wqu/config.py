@@ -288,6 +288,8 @@ class ModelConfig:
         recurrent_dropout: Dropout rate after each LSTM layer.
         head_dropout: Dropout rate in the classification head.
         mc_samples: Stochastic forward passes used for MC dropout predictions.
+        grad_cam_mc_samples: Stochastic passes used for each Grad-CAM map.
+        grad_cam_records_per_class: Records per class shown in the Grad-CAM check.
         figures_dir: Output directory for the figures of the model checks.
         tables_dir: Output directory for the tables of the model checks.
     """
@@ -301,6 +303,8 @@ class ModelConfig:
     recurrent_dropout: float
     head_dropout: float
     mc_samples: int
+    grad_cam_mc_samples: int
+    grad_cam_records_per_class: int
     figures_dir: Path
     tables_dir: Path
 
@@ -826,6 +830,7 @@ def _build_model_config(section: Mapping[str, Any], project_root: Path) -> Model
     """
     context = "model"
     dropout = _require(section, "dropout", context)
+    grad_cam = _require(section, "grad_cam", context)
     config = ModelConfig(
         conv_filters=_as_int_tuple(_require(section, "conv_filters", context), f"{context}.conv_filters"),
         conv_kernels=_as_int_tuple(_require(section, "conv_kernels", context), f"{context}.conv_kernels"),
@@ -836,6 +841,8 @@ def _build_model_config(section: Mapping[str, Any], project_root: Path) -> Model
         recurrent_dropout=float(_require(dropout, "recurrent", f"{context}.dropout")),
         head_dropout=float(_require(dropout, "head", f"{context}.dropout")),
         mc_samples=int(_require(section, "mc_samples", context)),
+        grad_cam_mc_samples=int(_require(grad_cam, "mc_samples", f"{context}.grad_cam")),
+        grad_cam_records_per_class=int(_require(grad_cam, "records_per_class", f"{context}.grad_cam")),
         figures_dir=_resolve_path(_require(section, "figures_dir", context), project_root),
         tables_dir=_resolve_path(_require(section, "tables_dir", context), project_root),
     )
@@ -850,8 +857,10 @@ def _build_model_config(section: Mapping[str, Any], project_root: Path) -> Model
         problems.append("recurrent_layers must be at least 1")
     if not all(0.0 <= rate < 1.0 for rate in (config.conv_dropout, config.recurrent_dropout, config.head_dropout)):
         problems.append("dropout rates must be in [0, 1)")
-    if config.mc_samples < 1:
-        problems.append("mc_samples must be at least 1")
+    if config.mc_samples < 1 or config.grad_cam_mc_samples < 2:
+        problems.append("mc_samples must be at least 1 and grad_cam.mc_samples at least 2")
+    if config.grad_cam_records_per_class < 1:
+        problems.append("grad_cam.records_per_class must be at least 1")
     if problems:
         raise ValueError("Invalid model configuration: " + "; ".join(problems) + ".")
     return config

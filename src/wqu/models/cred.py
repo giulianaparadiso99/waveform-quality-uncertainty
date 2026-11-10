@@ -63,16 +63,16 @@ class ConvStage(nn.Module):
             dropout: Channel dropout rate.
         """
         super().__init__()
-        self.layers = nn.Sequential(
+        self.strided = nn.Sequential(
             nn.Conv2d(in_channels, out_channels, kernel_size, stride=2, padding=kernel_size // 2),
             nn.ReLU(),
-            ResidualBlock(out_channels, kernel_size - 2),
-            nn.Dropout2d(dropout),
         )
+        self.residual = ResidualBlock(out_channels, kernel_size - 2)
+        self.dropout = nn.Dropout2d(dropout)
 
     def forward(self, inputs: torch.Tensor) -> torch.Tensor:
         """Apply the stage."""
-        return self.layers(inputs)
+        return self.dropout(self.residual(self.strided(inputs)))
 
 
 class ResidualBiLSTM(nn.Module):
@@ -136,6 +136,11 @@ class CredClassifier(nn.Module):
             nn.Dropout(config.head_dropout),
             nn.Linear(config.head_units, 1),
         )
+
+    @property
+    def last_conv_layer(self) -> nn.Module:
+        """Residual block of the last convolutional stage (before its dropout), used by Grad-CAM."""
+        return self.conv[-1].residual
 
     def forward(self, inputs: torch.Tensor) -> torch.Tensor:
         """Map (batch, components, frequencies, times) to logits of shape (batch,)."""
