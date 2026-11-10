@@ -180,10 +180,15 @@ waveforms:
   random_seed: 42
 
 preprocessing:
-  # Analysis window anchored on the time of the peak absolute acceleration (PGA) over the three components.
+  # Analysis window placed around an anchor time, the same for the three components.
   window:
-    pre_pga_s: 30.0
-    post_pga_s: 90.0
+    # Anchoring method (parameters in `anchoring` below): envelope = maximum of the energy envelope
+    # of the three components, insensitive to isolated spikes (chosen after inspecting the gallery of
+    # notebook 02). Others: pga, arias, theoretical, hybrid. Records where the method finds no anchor
+    # fall back to the PGA.
+    anchor: envelope
+    pre_anchor_s: 30.0
+    post_anchor_s: 90.0
     # Extra data on each side used by the transforms and discarded afterwards (edge effects).
     # Must be at least half the STFT window and the Morlet wavelet half-width at min_frequency_hz.
     context_margin_s: 20.0
@@ -192,12 +197,25 @@ preprocessing:
   # Grid search over the window (notebook 02): the suggested values are printed, the window used
   # by the preprocessing is always the one in `window` above.
   window_search:
-    pre_pga_s: [10, 20, 30, 40, 50, 60]
-    post_pga_s: [30, 45, 60, 90, 120, 150, 180, 240]
-    # Leakage criterion: the zero padding inside the window (before the PGA, after the PGA, total;
-    # seconds on the worst component) must not separate the classes. Separation = max(AUC, 1 - AUC),
-    # 0.5 = no information. A window is accepted when all three separations are at most this value.
-    max_padding_separation: 0.55
+    pre_anchor_s: [10, 20, 30, 40, 50, 60]
+    post_anchor_s: [30, 45, 60, 90, 120, 150, 180, 240]
+    # Leakage criterion: the zero padding inside the window must not separate the classes.
+    # Separation = max(AUC, 1 - AUC), 0.5 = no information. Tested on the seconds of padding before
+    # the anchor, after the anchor and in total (worst component), and with a classifier that sees only the
+    # padding (seconds per component and padding fraction per time bin and component), evaluated out
+    # of fold with folds grouped by event. A window is accepted when all separations are at most
+    # max_separation (standard error of the AUC with 1000 records per class: about 0.013).
+    leakage:
+      max_separation: 0.55
+      # Records with a component entirely without data are a real defect, not an effect of the window.
+      exclude_empty_components: true
+      classifier:
+        n_splits: 5
+        mask_bins: 32
+        random_seed: 42
+        # Label permutations giving the separation reached when the padding carries no class
+        # information (reference for max_separation).
+        n_permutations: 20
     # Signal-loss criterion: fraction of the energy (sum of squared amplitudes over the three
     # components) of the stored trace that falls inside the window.
     energy:
@@ -212,6 +230,27 @@ preprocessing:
     # Among accepted windows, those within this amount of the best energy score are equivalent:
     # the shortest one is suggested.
     score_tolerance: 0.005
+  # Parameters of the anchoring methods; `methods` lists those compared in notebook 02.
+  anchoring:
+    # Any of: pga, envelope, arias, theoretical, hybrid.
+    methods: [pga, envelope, arias, theoretical, hybrid]
+    # Moving-average length of the energy envelope (sum of squared amplitudes of the three components).
+    envelope_window_s: 2.0
+    # Arias anchor: time at which this fraction of the energy has arrived (0.05 = onset of the strong
+    # motion, 0.5 = centre of the energy).
+    arias_fraction: 0.5
+    # Theoretical arrival: origin time + distance / velocity (3.5 km/s: S waves in the crust).
+    theoretical:
+      distance_column: path_hyp_dist_km
+      phase_velocity_km_s: 3.5
+    # Hybrid: maximum of the energy envelope within this distance of the theoretical arrival.
+    hybrid_search_half_width_s: 20.0
+    # Two anchors disagree when they differ by more than this.
+    agreement_tolerance_s: 10.0
+    # Records per class shown where the configured anchor and the PGA disagree.
+    n_examples_per_class: 3
+    # Random records per class in the gallery (one PDF per class) showing the window of every method.
+    gallery_records_per_class: 30
   resampling:
     target_sampling_rate_hz: 100.0
     # Zero-phase Butterworth low-pass applied before resampling.
@@ -233,11 +272,13 @@ preprocessing:
   decibel:
     # Power reference of the decibel scale (absolute, identical for all records).
     reference_power: 1.0
-    # Power assigned to zero or tiny values before the logarithm.
-    # Provisional: revise after inspecting the power distributions in notebook 02.
+    # Power assigned to zero or tiny values before the logarithm. Chosen from the power distributions
+    # of notebook 02: real values lie above about -120 dB, filter artefacts and missing data below.
     floor_power: 1.0e-12
   # Number of records whose power values are pooled to inspect the decibel distributions.
   n_distribution_records: 200
+  # The plot of the power distributions starts this many dB below the floor.
+  distribution_plot_margin_db: 80.0
   # Number of records per class saved as PNG images for visual inspection.
   n_png_records_per_class: 5
   output_dir: data/processed

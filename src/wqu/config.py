@@ -18,6 +18,7 @@ import yaml
 VALID_DATA_SOURCES: tuple[str, ...] = ("seisbench", "local_csv")
 VALID_WAVEFORM_SOURCES: tuple[str, ...] = ("dev_subset", "seisbench")
 VALID_ENERGY_CRITERIA: tuple[str, ...] = ("quantile", "share_above")
+VALID_ANCHOR_METHODS: tuple[str, ...] = ("pga", "envelope", "arias", "theoretical", "hybrid")
 REQUIRED_LABELS: frozenset[int] = frozenset({0, 1})
 
 
@@ -139,10 +140,18 @@ class WindowSearchConfig:
     """Grid search over the analysis window around the PGA.
 
     Attributes:
-        pre_pga_s: Candidate lengths before the PGA.
-        post_pga_s: Candidate lengths after the PGA.
+        pre_anchor_s: Candidate lengths before the PGA.
+        post_anchor_s: Candidate lengths after the PGA.
         max_padding_separation: Largest accepted separation (max of AUC and 1 - AUC)
-            between the classes of the zero padding contained in the window.
+            between the classes of the zero padding contained in the window, over the
+            univariate measures and the padding classifier.
+        exclude_empty_components: Exclude from the leakage tests the records with a
+            component entirely without data.
+        classifier_n_splits: Folds (grouped by event) of the padding classifier.
+        classifier_mask_bins: Time bins of the window in the padding mask seen by the classifier.
+        classifier_random_seed: Random seed of the folds and of the classifier.
+        classifier_n_permutations: Label permutations used to estimate the separation
+            reached by the classifier when the padding carries no class information.
         energy_reference_label: Label of the records on which the energy kept is measured.
         energy_criterion: ``quantile`` (a quantile of the energy fraction kept) or
             ``share_above`` (share of records keeping at least ``min_energy_fraction``).
@@ -152,9 +161,14 @@ class WindowSearchConfig:
             best are considered equivalent; the shortest of them is selected.
     """
 
-    pre_pga_s: tuple[float, ...]
-    post_pga_s: tuple[float, ...]
+    pre_anchor_s: tuple[float, ...]
+    post_anchor_s: tuple[float, ...]
     max_padding_separation: float
+    exclude_empty_components: bool
+    classifier_n_splits: int
+    classifier_mask_bins: int
+    classifier_random_seed: int
+    classifier_n_permutations: int
     energy_reference_label: int
     energy_criterion: str
     energy_quantile: float
@@ -163,11 +177,40 @@ class WindowSearchConfig:
 
 
 @dataclass(frozen=True)
+class AnchoringConfig:
+    """Comparison of the methods that place the analysis window.
+
+    Attributes:
+        methods: Methods to compare (see ``wqu.preprocessing.anchoring``).
+        envelope_window_s: Moving-average length of the energy envelope.
+        arias_fraction: Fraction of the cumulative energy defining the Arias anchor.
+        distance_column: Metadata column with the source-station distance in km.
+        phase_velocity_km_s: Velocity used for the theoretical arrival.
+        hybrid_search_half_width_s: Half-width of the interval around the theoretical
+            arrival in which the hybrid method looks for the envelope maximum.
+        agreement_tolerance_s: Two anchors disagree when they differ by more than this.
+        n_examples_per_class: Records per class shown where the configured anchor and the PGA disagree.
+        gallery_records_per_class: Random records per class in the gallery of windows of every method.
+    """
+
+    methods: tuple[str, ...]
+    envelope_window_s: float
+    arias_fraction: float
+    distance_column: str
+    phase_velocity_km_s: float
+    hybrid_search_half_width_s: float
+    agreement_tolerance_s: float
+    n_examples_per_class: int
+    gallery_records_per_class: int
+
+
+@dataclass(frozen=True)
 class PreprocessingConfig:
     """Parameters of the waveform-to-image preprocessing."""
 
-    pre_pga_s: float
-    post_pga_s: float
+    anchor_method: str
+    pre_anchor_s: float
+    post_anchor_s: float
     context_margin_s: float
     taper_fraction: float
     target_sampling_rate_hz: float
@@ -183,7 +226,9 @@ class PreprocessingConfig:
     reference_power: float
     floor_power: float
     window_search: WindowSearchConfig
+    anchoring: AnchoringConfig
     n_distribution_records: int
+    distribution_plot_margin_db: float
     n_png_records_per_class: int
     output_dir: Path
     figures_dir: Path
@@ -192,7 +237,7 @@ class PreprocessingConfig:
     @property
     def window_length_s(self) -> float:
         """Length of the analysis window in seconds."""
-        return self.pre_pga_s + self.post_pga_s
+        return self.pre_anchor_s + self.post_anchor_s
 
     @property
     def stft_window_s(self) -> float:
@@ -514,11 +559,18 @@ def _build_window_search_config(section: Mapping[str, Any]) -> WindowSearchConfi
         Validated WindowSearchConfig.
     """
     context = "preprocessing.window_search"
+    leakage = _require(section, "leakage", context)
+    classifier = _require(leakage, "classifier", f"{context}.leakage")
     energy = _require(section, "energy", context)
     config = WindowSearchConfig(
-        pre_pga_s=_as_positive_float_tuple(_require(section, "pre_pga_s", context), f"{context}.pre_pga_s"),
-        post_pga_s=_as_positive_float_tuple(_require(section, "post_pga_s", context), f"{context}.post_pga_s"),
-        max_padding_separation=float(_require(section, "max_padding_separation", context)),
+        pre_anchor_s=_as_positive_float_tuple(_require(section, "pre_anchor_s", context), f"{context}.pre_anchor_s"),
+        post_anchor_s=_as_positive_float_tuple(_require(section, "post_anchor_s", context), f"{context}.post_anchor_s"),
+        max_padding_separation=float(_require(leakage, "max_separation", f"{context}.leakage")),
+        exclude_empty_components=bool(_require(leakage, "exclude_empty_components", f"{context}.leakage")),
+        classifier_n_splits=int(_require(classifier, "n_splits", f"{context}.leakage.classifier")),
+        classifier_mask_bins=int(_require(classifier, "mask_bins", f"{context}.leakage.classifier")),
+        classifier_random_seed=int(_require(classifier, "random_seed", f"{context}.leakage.classifier")),
+        classifier_n_permutations=int(_require(classifier, "n_permutations", f"{context}.leakage.classifier")),
         energy_reference_label=int(_require(energy, "reference_label", f"{context}.energy")),
         energy_criterion=str(_require(energy, "criterion", f"{context}.energy")),
         energy_quantile=float(_require(energy, "quantile", f"{context}.energy")),
@@ -527,7 +579,13 @@ def _build_window_search_config(section: Mapping[str, Any]) -> WindowSearchConfi
     )
     problems = []
     if not 0.5 <= config.max_padding_separation <= 1.0:
-        problems.append("max_padding_separation must be in [0.5, 1]")
+        problems.append("leakage.max_separation must be in [0.5, 1]")
+    if config.classifier_n_splits < 2:
+        problems.append("leakage.classifier.n_splits must be at least 2")
+    if config.classifier_mask_bins < 1:
+        problems.append("leakage.classifier.mask_bins must be at least 1")
+    if config.classifier_n_permutations < 1:
+        problems.append("leakage.classifier.n_permutations must be at least 1")
     if config.energy_reference_label not in REQUIRED_LABELS:
         problems.append(f"energy.reference_label must be one of {sorted(REQUIRED_LABELS)}")
     if config.energy_criterion not in VALID_ENERGY_CRITERIA:
@@ -538,8 +596,49 @@ def _build_window_search_config(section: Mapping[str, Any]) -> WindowSearchConfi
         problems.append("energy.min_fraction must be in (0, 1]")
     if config.score_tolerance < 0:
         problems.append("score_tolerance must be non-negative")
-    if min(config.post_pga_s) <= 0:
-        problems.append("post_pga_s values must be positive")
+    if min(config.post_anchor_s) <= 0:
+        problems.append("post_anchor_s values must be positive")
+    if problems:
+        raise ValueError(f"Invalid {context} configuration: " + "; ".join(problems) + ".")
+    return config
+
+
+def _build_anchoring_config(section: Mapping[str, Any]) -> AnchoringConfig:
+    """Build and validate the ``preprocessing.anchoring`` section.
+
+    Args:
+        section: Parsed ``anchoring`` mapping.
+
+    Returns:
+        Validated AnchoringConfig.
+    """
+    context = "preprocessing.anchoring"
+    theoretical = _require(section, "theoretical", context)
+    config = AnchoringConfig(
+        methods=_as_str_tuple(_require(section, "methods", context), f"{context}.methods"),
+        envelope_window_s=float(_require(section, "envelope_window_s", context)),
+        arias_fraction=float(_require(section, "arias_fraction", context)),
+        distance_column=str(_require(theoretical, "distance_column", f"{context}.theoretical")),
+        phase_velocity_km_s=float(_require(theoretical, "phase_velocity_km_s", f"{context}.theoretical")),
+        hybrid_search_half_width_s=float(_require(section, "hybrid_search_half_width_s", context)),
+        agreement_tolerance_s=float(_require(section, "agreement_tolerance_s", context)),
+        n_examples_per_class=int(_require(section, "n_examples_per_class", context)),
+        gallery_records_per_class=int(_require(section, "gallery_records_per_class", context)),
+    )
+    problems = []
+    unknown = sorted(set(config.methods) - set(VALID_ANCHOR_METHODS))
+    if unknown or not config.methods:
+        problems.append(f"methods must be a non-empty subset of {VALID_ANCHOR_METHODS}, got unknown {unknown}")
+    if config.envelope_window_s <= 0:
+        problems.append("envelope_window_s must be positive")
+    if not 0.0 < config.arias_fraction < 1.0:
+        problems.append("arias_fraction must be in (0, 1)")
+    if config.phase_velocity_km_s <= 0:
+        problems.append("theoretical.phase_velocity_km_s must be positive")
+    if config.hybrid_search_half_width_s <= 0 or config.agreement_tolerance_s <= 0:
+        problems.append("hybrid_search_half_width_s and agreement_tolerance_s must be positive")
+    if config.n_examples_per_class < 0 or config.gallery_records_per_class < 0:
+        problems.append("n_examples_per_class and gallery_records_per_class must be non-negative")
     if problems:
         raise ValueError(f"Invalid {context} configuration: " + "; ".join(problems) + ".")
     return config
@@ -567,8 +666,9 @@ def _build_preprocessing_config(section: Mapping[str, Any], project_root: Path) 
     cwt = _require(section, "cwt", context)
     decibel = _require(section, "decibel", context)
     config = PreprocessingConfig(
-        pre_pga_s=float(_require(window, "pre_pga_s", f"{context}.window")),
-        post_pga_s=float(_require(window, "post_pga_s", f"{context}.window")),
+        anchor_method=str(_require(window, "anchor", f"{context}.window")),
+        pre_anchor_s=float(_require(window, "pre_anchor_s", f"{context}.window")),
+        post_anchor_s=float(_require(window, "post_anchor_s", f"{context}.window")),
         context_margin_s=float(_require(window, "context_margin_s", f"{context}.window")),
         taper_fraction=float(_require(window, "taper_fraction", f"{context}.window")),
         target_sampling_rate_hz=float(_require(resampling, "target_sampling_rate_hz", f"{context}.resampling")),
@@ -584,7 +684,9 @@ def _build_preprocessing_config(section: Mapping[str, Any], project_root: Path) 
         reference_power=float(_require(decibel, "reference_power", f"{context}.decibel")),
         floor_power=float(_require(decibel, "floor_power", f"{context}.decibel")),
         window_search=_build_window_search_config(_require(section, "window_search", context)),
+        anchoring=_build_anchoring_config(_require(section, "anchoring", context)),
         n_distribution_records=int(_require(section, "n_distribution_records", context)),
+        distribution_plot_margin_db=float(_require(section, "distribution_plot_margin_db", context)),
         n_png_records_per_class=int(_require(section, "n_png_records_per_class", context)),
         output_dir=_resolve_path(_require(section, "output_dir", context), project_root),
         figures_dir=_resolve_path(_require(section, "figures_dir", context), project_root),
@@ -598,8 +700,10 @@ def _build_preprocessing_config(section: Mapping[str, Any], project_root: Path) 
         problems.append("max_frequency_hz must not exceed antialias_corner_hz")
     if config.antialias_corner_hz >= nyquist_hz:
         problems.append("antialias_corner_hz must be below the target Nyquist frequency")
-    if config.pre_pga_s < 0 or config.post_pga_s <= 0:
-        problems.append("window requires pre_pga_s >= 0 and post_pga_s > 0")
+    if config.anchor_method not in VALID_ANCHOR_METHODS:
+        problems.append(f"window.anchor must be one of {VALID_ANCHOR_METHODS}")
+    if config.pre_anchor_s < 0 or config.post_anchor_s <= 0:
+        problems.append("window requires pre_anchor_s >= 0 and post_anchor_s > 0")
     if config.context_margin_s < max(config.stft_window_s / 2.0, 2.0 * config.morlet_half_width_s):
         problems.append(
             "context_margin_s must be at least half the STFT window "

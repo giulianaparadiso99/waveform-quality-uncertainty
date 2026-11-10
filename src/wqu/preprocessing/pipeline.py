@@ -18,6 +18,7 @@ from tqdm.auto import tqdm
 
 from wqu.config import PreprocessingConfig
 from wqu.data.loading import CV_COMPONENTS
+from wqu.preprocessing.anchoring import window_anchor
 from wqu.preprocessing.transform import (
     TimeFrequencyGrid,
     build_grid,
@@ -73,12 +74,13 @@ def grid_from_config(config: PreprocessingConfig) -> TimeFrequencyGrid:
 
 
 def locate_window(
-    trace: np.ndarray, sampling_rate_hz: float, config: PreprocessingConfig, tolerance: float
+    trace: np.ndarray, record: pd.Series, sampling_rate_hz: float, config: PreprocessingConfig, tolerance: float
 ) -> tuple[np.ndarray, WindowBounds, dict[str, float]]:
-    """Remove the mean of the recorded samples and locate the analysis window.
+    """Remove the mean of the recorded samples and locate the analysis window around its anchor.
 
     Args:
         trace: Stored trace, shape (components, samples).
+        record: Metadata row of the record (used by the metadata-based anchoring methods).
         sampling_rate_hz: Sampling rate of the stored trace.
         config: Preprocessing configuration.
         tolerance: Zero threshold used to find the zero padding.
@@ -87,19 +89,26 @@ def locate_window(
         Tuple (mean-removed trace, window bounds, window statistics).
     """
     prepared = prepare_trace(trace, tolerance)
+    anchor = window_anchor(prepared, record, sampling_rate_hz, config.anchor_method, config.anchoring)
     bounds = window_bounds(
-        prepared.pga_index, sampling_rate_hz, config.pre_pga_s, config.post_pga_s, config.context_margin_s
+        anchor, sampling_rate_hz, config.pre_anchor_s, config.post_anchor_s, config.context_margin_s
     )
     return prepared.centred, bounds, window_cut_statistics(prepared.centred, bounds, tolerance, sampling_rate_hz)
 
 
 def process_record(
-    trace: np.ndarray, sampling_rate_hz: float, config: PreprocessingConfig, grid: TimeFrequencyGrid, tolerance: float
+    trace: np.ndarray,
+    record: pd.Series,
+    sampling_rate_hz: float,
+    config: PreprocessingConfig,
+    grid: TimeFrequencyGrid,
+    tolerance: float,
 ) -> ProcessedRecord:
     """Window, condition and transform one record.
 
     Args:
         trace: Stored trace, shape (components, samples).
+        record: Metadata row of the record.
         sampling_rate_hz: Sampling rate of the stored trace.
         config: Preprocessing configuration.
         grid: Common time-frequency grid.
@@ -108,7 +117,7 @@ def process_record(
     Returns:
         ProcessedRecord with power arrays (not yet in decibels).
     """
-    centred, bounds, statistics = locate_window(trace, sampling_rate_hz, config, tolerance)
+    centred, bounds, statistics = locate_window(trace, record, sampling_rate_hz, config, tolerance)
     segment = taper_segment(extract_segment(centred, bounds.segment_start, bounds.segment_stop), config.taper_fraction)
     resampled = resample_segment(
         segment, sampling_rate_hz, config.target_sampling_rate_hz, config.antialias_corner_hz, config.antialias_order
@@ -149,8 +158,8 @@ def window_table(
     """
     rows = {}
     for records, traces in batches:
-        for index, trace in zip(records.index, traces):
-            _, bounds, statistics = locate_window(trace, sampling_rate_hz, config, tolerance)
+        for (index, record), trace in zip(records.iterrows(), traces):
+            _, bounds, statistics = locate_window(trace, record, sampling_rate_hz, config, tolerance)
             rows[index] = {**asdict(bounds), **statistics}
     return pd.DataFrame.from_dict(rows, orient="index")
 
@@ -176,9 +185,9 @@ def pooled_power_values(
     """
     grid = grid_from_config(config)
     pooled: dict[str, list[np.ndarray]] = {name: [] for name in REPRESENTATIONS}
-    for _, traces in batches:
-        for trace in traces:
-            processed = process_record(trace, sampling_rate_hz, config, grid, tolerance)
+    for records, traces in batches:
+        for (_, record), trace in zip(records.iterrows(), traces):
+            processed = process_record(trace, record, sampling_rate_hz, config, grid, tolerance)
             for name in REPRESENTATIONS:
                 pooled[name].append(processed.power[name].ravel())
     return {name: np.concatenate(values) for name, values in pooled.items()}
@@ -243,8 +252,8 @@ def preprocess_and_store(
                 output.attrs[key] = value
         with tqdm(total=len(records), desc="preprocessing") as progress:
             for batch, traces in batches:
-                for index, trace in zip(batch.index, traces):
-                    processed = process_record(trace, sampling_rate_hz, config, grid, tolerance)
+                for (index, record), trace in zip(batch.iterrows(), traces):
+                    processed = process_record(trace, record, sampling_rate_hz, config, grid, tolerance)
                     row = int(positions[index])
                     for name in REPRESENTATIONS:
                         datasets[name][row] = power_to_db(

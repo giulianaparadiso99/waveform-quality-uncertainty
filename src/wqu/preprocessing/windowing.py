@@ -2,8 +2,9 @@
 
 Steps, all applied identically to the three components of a record:
 1. remove the mean of each component over its recorded samples (zero padding stays zero);
-2. find the time of the peak absolute acceleration over the three components (PGA);
-3. take a window from ``pre_pga_s`` before to ``post_pga_s`` after the PGA, extended by a
+2. find the anchor of the window (see ``wqu.preprocessing.anchoring``; by default the maximum of
+   the energy envelope of the three components);
+3. take a window from ``pre_anchor_s`` before to ``post_anchor_s`` after the anchor, extended by a
    context margin on both sides (samples outside the stored trace are zeros);
 4. taper the ends of the extended segment;
 5. low-pass filter and resample it.
@@ -30,18 +31,18 @@ RESAMPLING_MAX_DENOMINATOR = 1000
 class WindowBounds:
     """Sample indices of the analysis window in the stored trace.
 
-    Indices may fall outside the stored trace when the PGA is close to its ends;
+    Indices may fall outside the stored trace when the anchor is close to its ends;
     the missing samples are filled with zeros.
 
     Attributes:
-        pga_sample: Sample of the peak absolute acceleration.
+        anchor_sample: Sample on which the window is anchored.
         window_start: First sample of the analysis window.
         window_stop: Sample after the last one of the analysis window.
         segment_start: First sample of the window extended by the context margin.
         segment_stop: Sample after the last one of the extended window.
     """
 
-    pga_sample: int
+    anchor_sample: int
     window_start: int
     window_stop: int
     segment_start: int
@@ -112,25 +113,52 @@ def pga_sample(traces: np.ndarray) -> int:
     return int(np.unravel_index(np.argmax(np.abs(traces)), traces.shape)[1])
 
 
-def window_bounds(
-    pga_index: int, sampling_rate_hz: float, pre_pga_s: float, post_pga_s: float, context_margin_s: float
-) -> WindowBounds:
-    """Compute the analysis window and its extension around the PGA sample.
+def cumulative_energy(traces: np.ndarray) -> np.ndarray:
+    """Cumulative energy (sum of squared amplitudes over the components), with a leading zero.
 
     Args:
-        pga_index: Sample of the PGA.
+        traces: Array of shape (components, samples).
+
+    Returns:
+        Array of shape (samples + 1,); element i is the energy of samples 0 to i - 1.
+    """
+    return np.concatenate(([0.0], np.cumsum((traces**2).sum(axis=0))))
+
+
+def interval_sums(cumulative: np.ndarray, start: np.ndarray, stop: np.ndarray) -> np.ndarray:
+    """Sums over intervals ``[start, stop)`` from a cumulative sum starting at zero.
+
+    Args:
+        cumulative: Cumulative sum with a leading zero, shape (n_samples + 1,).
+        start: Interval starts (clipped to the trace).
+        stop: Interval stops (clipped to the trace).
+
+    Returns:
+        Array of interval sums.
+    """
+    last = len(cumulative) - 1
+    return cumulative[np.clip(stop, 0, last)] - cumulative[np.clip(start, 0, last)]
+
+
+def window_bounds(
+    anchor_index: int, sampling_rate_hz: float, pre_anchor_s: float, post_anchor_s: float, context_margin_s: float
+) -> WindowBounds:
+    """Compute the analysis window and its extension around the anchor sample.
+
+    Args:
+        anchor_index: Sample of the anchor.
         sampling_rate_hz: Sampling rate of the stored trace.
-        pre_pga_s: Window length before the PGA.
-        post_pga_s: Window length after the PGA.
+        pre_anchor_s: Window length before the anchor.
+        post_anchor_s: Window length after the anchor.
         context_margin_s: Extension on each side.
 
     Returns:
         WindowBounds.
     """
-    window_start = pga_index - int(round(pre_pga_s * sampling_rate_hz))
-    window_stop = pga_index + int(round(post_pga_s * sampling_rate_hz))
+    window_start = anchor_index - int(round(pre_anchor_s * sampling_rate_hz))
+    window_stop = anchor_index + int(round(post_anchor_s * sampling_rate_hz))
     margin = int(round(context_margin_s * sampling_rate_hz))
-    return WindowBounds(pga_index, window_start, window_stop, window_start - margin, window_stop + margin)
+    return WindowBounds(anchor_index, window_start, window_stop, window_start - margin, window_stop + margin)
 
 
 def extract_segment(traces: np.ndarray, start: int, stop: int) -> np.ndarray:
@@ -208,7 +236,7 @@ def window_cut_statistics(
         Dictionary with, per component c: ``nonzero_cut_before_c`` and
         ``nonzero_cut_after_c`` (recorded samples removed before and after the
         window) and ``missing_in_window_s_c`` (seconds of the window without data);
-        and per record: ``pga_time_s`` (from the trace start), ``recorded_fraction_kept``
+        and per record: ``anchor_time_s`` (from the trace start), ``recorded_fraction_kept``
         and ``energy_fraction_kept`` (share of recorded samples and of the sum of
         squared amplitudes inside the window).
     """
@@ -216,7 +244,7 @@ def window_cut_statistics(
     start, stop = max(bounds.window_start, 0), min(bounds.window_stop, n_samples)
     nonzero = np.abs(traces) > tolerance
     energy = traces**2
-    statistics: dict[str, float] = {"pga_time_s": bounds.pga_sample / sampling_rate_hz}
+    statistics: dict[str, float] = {"anchor_time_s": bounds.anchor_sample / sampling_rate_hz}
     window_samples = bounds.window_stop - bounds.window_start
     for position, component in enumerate(CV_COMPONENTS):
         statistics[f"nonzero_cut_before_{component}"] = float(nonzero[position, :start].sum())

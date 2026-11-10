@@ -8,12 +8,13 @@ measures use one neutral color; rates use a single-hue sequential colormap.
 
 from __future__ import annotations
 
-from collections.abc import Mapping, Sequence
+from collections.abc import Iterable, Mapping, Sequence
 from pathlib import Path
 
 import cartopy.crs as ccrs
 import cartopy.feature as cfeature
 import matplotlib.pyplot as plt
+from matplotlib.backends.backend_pdf import PdfPages
 import numpy as np
 import pandas as pd
 from matplotlib.axes import Axes
@@ -574,6 +575,7 @@ def plot_value_distributions(
     x_label: str,
     n_bins: int = 100,
     quantile_range: tuple[float, float] = (0.0, 1.0),
+    x_limits: tuple[float, float] | None = None,
 ) -> Axes:
     """Normalized histograms of several sets of values on a common set of bins.
 
@@ -584,6 +586,7 @@ def plot_value_distributions(
         n_bins: Number of bins.
         quantile_range: The x range spans these quantiles of the pooled values,
             so that a few extreme values do not hide the bulk of the distribution.
+        x_limits: Explicit x range; when given, ``quantile_range`` is ignored.
 
     Returns:
         The Axes.
@@ -592,7 +595,10 @@ def plot_value_distributions(
         raise ValueError(f"At most {len(GROUP_COLORS)} sets can be drawn.")
     finite = {name: values[np.isfinite(values)] for name, values in values_by_name.items()}
     pooled = np.concatenate(list(finite.values()))
-    low, high = (float(value) for value in np.quantile(pooled, quantile_range))
+    if x_limits is None:
+        low, high = (float(value) for value in np.quantile(pooled, quantile_range))
+    else:
+        low, high = x_limits
     edges = np.linspace(low, high, n_bins + 1)
     for color, (name, values) in zip(GROUP_COLORS, finite.items()):
         ax.hist(values, bins=edges, density=True, histtype="step", linewidth=LINE_WIDTH, color=color, label=name)
@@ -635,7 +641,7 @@ def plot_window_grid_heatmap(
     value_format: str,
     marked_windows: Mapping[str, tuple[float, float]],
 ) -> Axes:
-    """Heatmap of a window-search measure over (pre_pga_s, post_pga_s).
+    """Heatmap of a window-search measure over (pre_anchor_s, post_anchor_s).
 
     Rejected windows (``accepted`` false) are hatched; the windows in
     ``marked_windows`` are outlined (solid for ``suggested``, dashed otherwise).
@@ -647,13 +653,13 @@ def plot_window_grid_heatmap(
         title: Axes title.
         colormap: Matplotlib colormap name.
         value_format: Format of the cell annotations (e.g. ``.3f``).
-        marked_windows: Mapping from a name to (pre_pga_s, post_pga_s).
+        marked_windows: Mapping from a name to (pre_anchor_s, post_anchor_s).
 
     Returns:
         The Axes.
     """
-    table = summary.pivot(index="pre_pga_s", columns="post_pga_s", values=value_column)
-    accepted = summary.pivot(index="pre_pga_s", columns="post_pga_s", values="accepted").astype(bool)
+    table = summary.pivot(index="pre_anchor_s", columns="post_anchor_s", values=value_column)
+    accepted = summary.pivot(index="pre_anchor_s", columns="post_anchor_s", values="accepted").astype(bool)
     pre_values, post_values = table.index.to_numpy(), table.columns.to_numpy()
     image = ax.imshow(table.to_numpy(), cmap=colormap, aspect="auto", origin="lower")
     ax.figure.colorbar(image, ax=ax, label=value_column)
@@ -674,8 +680,8 @@ def plot_window_grid_heatmap(
             ))
     ax.set_xticks(range(len(post_values)), [f"{value:g}" for value in post_values])
     ax.set_yticks(range(len(pre_values)), [f"{value:g}" for value in pre_values])
-    ax.set_xlabel("post_pga_s [s]")
-    ax.set_ylabel("pre_pga_s [s]")
+    ax.set_xlabel("post_anchor_s [s]")
+    ax.set_ylabel("pre_anchor_s [s]")
     ax.set_title(title, loc="left")
     ax.grid(False)
     return ax
@@ -698,7 +704,7 @@ def plot_window_tradeoff(
         summary: Output of ``summarize_window_grid``.
         pareto: Boolean Series marking the Pareto front (see ``pareto_front``).
         max_padding_separation: Accepted padding separation.
-        marked_windows: Mapping from a name to (pre_pga_s, post_pga_s).
+        marked_windows: Mapping from a name to (pre_anchor_s, post_anchor_s).
         ax: Axes to draw on.
 
     Returns:
@@ -713,7 +719,7 @@ def plot_window_tradeoff(
     threshold_line = ax.axvline(max_padding_separation, color=REFERENCE_LINE_COLOR, linestyle="--", linewidth=1.0,
                                 label="max_padding_separation")
     for name, (pre, post) in marked_windows.items():
-        match = summary[np.isclose(summary["pre_pga_s"], pre) & np.isclose(summary["post_pga_s"], post)]
+        match = summary[np.isclose(summary["pre_anchor_s"], pre) & np.isclose(summary["post_anchor_s"], post)]
         if match.empty:
             continue
         row = match.iloc[0]
@@ -725,3 +731,134 @@ def plot_window_tradeoff(
     ax.set_ylabel("energy score")
     ax.legend(handles=[front_line, threshold_line], loc="best")
     return ax
+
+
+# Anchor colors: the PGA (reference) in neutral, the other methods in the group colors.
+ANCHOR_COLORS: Mapping[str, str] = {
+    "pga": NEUTRAL_COLOR,
+    "envelope": GROUP_COLORS[0],
+    "arias": GROUP_COLORS[1],
+    "theoretical": GROUP_COLORS[2],
+    "hybrid": GROUP_COLORS[3],
+}
+
+
+def plot_anchor_comparison(
+    trace: np.ndarray,
+    sampling_rate_hz: float,
+    anchors_s: Mapping[str, float],
+    envelope: np.ndarray,
+    components: Sequence[str],
+    title: str,
+) -> Figure:
+    """Plot each component, the energy envelope and the anchor of every method.
+
+    Args:
+        trace: Stored trace, shape (components, samples).
+        sampling_rate_hz: Sampling rate of the trace.
+        anchors_s: Mapping from method to anchor time in seconds (NaN when undetermined).
+        envelope: Energy envelope of the record, shape (samples,).
+        components: Component names (one per row).
+        title: Figure title.
+
+    Returns:
+        The Figure.
+    """
+    time_s = np.arange(trace.shape[-1]) / sampling_rate_hz
+    n_rows = len(components) + 1
+    figure, axes = plt.subplots(n_rows, 1, figsize=(10, 1.6 * n_rows), sharex=True)
+    for ax, component, values in zip(axes[:-1], components, trace):
+        ax.plot(time_s, values, color=WINDOW_TRACE_COLOR, linewidth=0.5)
+        ax.set_ylabel(f"acceleration {component}")
+    axes[-1].plot(time_s, envelope, color=WINDOW_TRACE_COLOR, linewidth=0.8)
+    axes[-1].set_ylabel("energy envelope")
+    for method, anchor in anchors_s.items():
+        if np.isnan(anchor):
+            continue
+        for ax in axes:
+            ax.axvline(anchor, color=ANCHOR_COLORS[method], linewidth=1.5,
+                       linestyle="--" if method == "pga" else "-", label=method)
+    handles, labels = axes[0].get_legend_handles_labels()
+    axes[0].legend(handles, labels, loc="upper right", ncol=len(labels), fontsize=8)
+    axes[-1].set_xlim(time_s[0], time_s[-1])
+    axes[-1].set_xlabel("time from trace start [s]")
+    figure.suptitle(title, x=0.01, ha="left")
+    figure.tight_layout()
+    return figure
+
+
+def plot_anchor_windows(
+    trace: np.ndarray,
+    sampling_rate_hz: float,
+    anchors_s: Mapping[str, float],
+    pre_s: float,
+    post_s: float,
+    components: Sequence[str],
+    title: str,
+) -> Figure:
+    """Plot the components of a record and, below, the window placed by each anchoring method.
+
+    The bottom panel has one horizontal bar per method, from ``pre_s`` before to
+    ``post_s`` after its anchor (marked by a black tick); methods without an anchor
+    are labelled as not found. All panels share the time axis, which is extended
+    when a window reaches beyond the stored trace.
+
+    Args:
+        trace: Stored trace, shape (components, samples).
+        sampling_rate_hz: Sampling rate of the trace.
+        anchors_s: Mapping from method to anchor time in seconds (NaN when undetermined).
+        pre_s: Window length before the anchor.
+        post_s: Window length after the anchor.
+        components: Component names (one per row).
+        title: Figure title.
+
+    Returns:
+        The Figure.
+    """
+    time_s = np.arange(trace.shape[-1]) / sampling_rate_hz
+    methods = list(anchors_s)
+    found = [anchor for anchor in anchors_s.values() if not np.isnan(anchor)]
+    x_min = min([0.0, *(anchor - pre_s for anchor in found)])
+    x_max = max([float(time_s[-1]), *(anchor + post_s for anchor in found)])
+    figure, axes = plt.subplots(
+        len(components) + 1, 1, figsize=(10, 1.4 * len(components) + 0.35 * len(methods) + 0.8), sharex=True,
+        gridspec_kw={"height_ratios": [1.0] * len(components) + [0.3 * len(methods)]},
+    )
+    for ax, component, values in zip(axes[:-1], components, trace):
+        ax.plot(time_s, values, color=WINDOW_TRACE_COLOR, linewidth=0.5)
+        ax.set_ylabel(component)
+    strip = axes[-1]
+    for position, method in enumerate(methods):
+        anchor = anchors_s[method]
+        if np.isnan(anchor):
+            strip.text(x_min + 0.01 * (x_max - x_min), position, "not found", va="center", fontsize=8,
+                       color=ANCHOR_COLORS[method])
+            continue
+        strip.barh(position, pre_s + post_s, left=anchor - pre_s, height=0.6, color=ANCHOR_COLORS[method], alpha=0.6)
+        strip.plot([anchor, anchor], [position - 0.35, position + 0.35], color="black", linewidth=1.2)
+    strip.set_yticks(range(len(methods)), methods)
+    strip.set_ylim(len(methods) - 0.5, -0.5)
+    strip.grid(axis="y", visible=False)
+    strip.set_xlim(x_min, x_max)
+    strip.set_xlabel(f"time from trace start [s] (bars: windows from {pre_s:g} s before to {post_s:g} s after the anchor)")
+    figure.suptitle(title, x=0.01, ha="left")
+    figure.tight_layout()
+    return figure
+
+
+def save_figures_pdf(figures: Iterable[Figure], path: Path) -> Path:
+    """Save figures as the pages of one PDF file, closing each after saving.
+
+    Args:
+        figures: Figures to save (may be a generator, so that they are built one at a time).
+        path: Output PDF file.
+
+    Returns:
+        The output path.
+    """
+    path.parent.mkdir(parents=True, exist_ok=True)
+    with PdfPages(path) as pdf:
+        for figure in figures:
+            pdf.savefig(figure, bbox_inches="tight")
+            plt.close(figure)
+    return path
