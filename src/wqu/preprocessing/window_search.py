@@ -210,14 +210,42 @@ def padding_features(before_s: np.ndarray, after_s: np.ndarray, bin_fractions: n
     return np.hstack([before_s, after_s, bin_fractions.reshape(len(bin_fractions), -1)])
 
 
+def out_of_fold_scores(
+    features: np.ndarray, labels: np.ndarray, groups: np.ndarray, n_splits: int, seed: int
+) -> np.ndarray:
+    """Out-of-fold probability of the bad class from a classifier on the given features.
+
+    Folds are stratified by label and grouped (records of the same event stay in
+    the same fold), so each record is scored by a model that has not seen its event.
+    Gradient-boosted trees are used, so non-linear combinations of the features are
+    captured.
+
+    Args:
+        features: Feature matrix, shape (records, features).
+        labels: Labels (1 = bad).
+        groups: Group of each record.
+        n_splits: Number of folds.
+        seed: Random seed of the folds and of the classifier.
+
+    Returns:
+        Scores of shape (records,); all equal to the share of bad records when the
+        features are constant (no information).
+    """
+    if np.all(features == features[0]):
+        return np.full(len(labels), float(np.mean(labels)))
+    scores = np.empty(len(labels), dtype=float)
+    splitter = StratifiedGroupKFold(n_splits=n_splits, shuffle=True, random_state=seed)
+    for train, test in splitter.split(features, labels, groups):
+        model = HistGradientBoostingClassifier(random_state=seed)
+        model.fit(features[train], labels[train])
+        scores[test] = model.predict_proba(features[test])[:, 1]
+    return scores
+
+
 def classifier_separation(
     features: np.ndarray, labels: np.ndarray, groups: np.ndarray, n_splits: int, seed: int
 ) -> float:
     """Out-of-fold class separation reached by a classifier on the given features.
-
-    Folds are stratified by label and grouped (records of the same event stay in
-    the same fold). Gradient-boosted trees are used, so non-linear combinations
-    of the features are captured.
 
     Args:
         features: Feature matrix, shape (records, features).
@@ -229,14 +257,9 @@ def classifier_separation(
     Returns:
         max(AUC, 1 - AUC) of the out-of-fold scores; 0.5 when the features are constant.
     """
-    if np.all(features == features[0]):
+    scores = out_of_fold_scores(features, labels, groups, n_splits, seed)
+    if np.all(scores == scores[0]):
         return 0.5
-    scores = np.empty(len(labels), dtype=float)
-    splitter = StratifiedGroupKFold(n_splits=n_splits, shuffle=True, random_state=seed)
-    for train, test in splitter.split(features, labels, groups):
-        model = HistGradientBoostingClassifier(random_state=seed)
-        model.fit(features[train], labels[train])
-        scores[test] = model.predict_proba(features[test])[:, 1]
     auc = float(roc_auc_score(labels, scores))
     return max(auc, 1.0 - auc)
 
@@ -491,6 +514,65 @@ def classifier_null_separations(
             for _ in range(search.classifier_n_permutations)
         ]
     )
+
+
+def padding_scores(
+    metrics: WindowGridMetrics, pre_anchor_s: float, post_anchor_s: float, search: WindowSearchConfig
+) -> pd.Series:
+    """Out-of-fold score of every record from the classifier that sees only the padding.
+
+    The score is the probability of the bad class given only where the window has no
+    data. Records excluded from the leakage tests (see ``leakage_records``) get NaN.
+
+    Args:
+        metrics: Measures of all candidates.
+        pre_anchor_s: Window length before the anchor.
+        post_anchor_s: Window length after the anchor.
+        search: Window search configuration.
+
+    Returns:
+        Series named ``padding_score`` indexed like ``metrics.index``.
+    """
+    inputs = leakage_inputs(metrics, pre_anchor_s, post_anchor_s, search)
+    scores = out_of_fold_scores(
+        inputs.features, inputs.labels, inputs.groups, search.classifier_n_splits, search.classifier_random_seed
+    )
+    return pd.Series(scores, index=inputs.measures.index, name="padding_score").reindex(metrics.index)
+
+
+def padding_reference(
+    metrics: WindowGridMetrics,
+    pre_anchor_s: float,
+    post_anchor_s: float,
+    anchor_method: str,
+    search: WindowSearchConfig,
+) -> pd.DataFrame:
+    """Reference separation of the padding for one window, with its permutation baseline.
+
+    Args:
+        metrics: Measures of all candidates.
+        pre_anchor_s: Window length before the anchor.
+        post_anchor_s: Window length after the anchor.
+        anchor_method: Anchoring method used to place the window.
+        search: Window search configuration.
+
+    Returns:
+        One-row table with the window, the number of records, the observed separation of
+        the padding classifier and the columns of ``null_comparison``.
+    """
+    inputs = leakage_inputs(metrics, pre_anchor_s, post_anchor_s, search)
+    observed = classifier_separation(
+        inputs.features, inputs.labels, inputs.groups, search.classifier_n_splits, search.classifier_random_seed
+    )
+    comparison = null_comparison(observed, classifier_null_separations(metrics, pre_anchor_s, post_anchor_s, search))
+    row = {
+        "anchor_method": anchor_method,
+        "pre_anchor_s": pre_anchor_s,
+        "post_anchor_s": post_anchor_s,
+        "n_records": len(inputs.labels),
+        **comparison,
+    }
+    return pd.DataFrame([row])
 
 
 def null_comparison(observed: float, null_separations: np.ndarray) -> dict[str, float]:

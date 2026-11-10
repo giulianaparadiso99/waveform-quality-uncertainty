@@ -251,6 +251,61 @@ class PreprocessingConfig:
 
 
 @dataclass(frozen=True)
+class SplitConfig:
+    """Training/validation split of ESM25.
+
+    Attributes:
+        validation_fraction: Approximate share of records in the validation set; the
+            split takes one fold of ``round(1 / validation_fraction)`` folds.
+        random_seed: Random seed of the fold assignment.
+        output_file: CSV file storing the split of every record.
+        tables_dir: Output directory for the summary tables.
+    """
+
+    validation_fraction: float
+    random_seed: int
+    output_file: Path
+    tables_dir: Path
+
+    @property
+    def n_folds(self) -> int:
+        """Number of folds whose first one is the validation set."""
+        return round(1.0 / self.validation_fraction)
+
+
+@dataclass(frozen=True)
+class ModelConfig:
+    """Convolutional-recurrent network adapted from CRED (Mousavi et al., 2019).
+
+    Attributes:
+        conv_filters: Filters of each convolutional stage.
+        conv_kernels: Kernel size of the strided convolution opening each stage; the two
+            convolutions of the residual block of the stage use ``kernel - 2``.
+        recurrent_units: Hidden units per direction of the bidirectional LSTM layers.
+        recurrent_layers: Number of bidirectional LSTM layers (residual from the second on).
+        head_units: Units of the hidden dense layer of the classification head.
+        conv_dropout: Channel dropout rate after each convolutional stage.
+        recurrent_dropout: Dropout rate after each LSTM layer.
+        head_dropout: Dropout rate in the classification head.
+        mc_samples: Stochastic forward passes used for MC dropout predictions.
+        figures_dir: Output directory for the figures of the model checks.
+        tables_dir: Output directory for the tables of the model checks.
+    """
+
+    conv_filters: tuple[int, ...]
+    conv_kernels: tuple[int, ...]
+    recurrent_units: int
+    recurrent_layers: int
+    head_units: int
+    conv_dropout: float
+    recurrent_dropout: float
+    head_dropout: float
+    mc_samples: int
+    figures_dir: Path
+    tables_dir: Path
+
+
+@dataclass(frozen=True)
 class OutputConfig:
     """Output directories for figures and tables."""
 
@@ -267,6 +322,8 @@ class ProjectConfig:
     exploration: ExplorationConfig
     waveforms: WaveformConfig
     preprocessing: PreprocessingConfig
+    split: SplitConfig
+    model: ModelConfig
     output: OutputConfig
 
 
@@ -721,6 +778,85 @@ def _build_preprocessing_config(section: Mapping[str, Any], project_root: Path) 
     return config
 
 
+def _build_split_config(section: Mapping[str, Any], project_root: Path) -> SplitConfig:
+    """Build and validate the ``split`` section.
+
+    Args:
+        section: Parsed ``split`` mapping.
+        project_root: Base directory for relative paths.
+
+    Returns:
+        Validated SplitConfig.
+    """
+    config = SplitConfig(
+        validation_fraction=float(_require(section, "validation_fraction", "split")),
+        random_seed=int(_require(section, "random_seed", "split")),
+        output_file=_resolve_path(_require(section, "output_file", "split"), project_root),
+        tables_dir=_resolve_path(_require(section, "tables_dir", "split"), project_root),
+    )
+    if not 0.0 < config.validation_fraction <= 0.5:
+        raise ValueError("split.validation_fraction must be in (0, 0.5].")
+    return config
+
+
+def _as_int_tuple(values: Any, context: str) -> tuple[int, ...]:
+    """Convert a YAML list of integers into a tuple, validating its type.
+
+    Args:
+        values: Parsed YAML value.
+        context: Entry name used in the error message.
+
+    Returns:
+        Tuple of integers.
+    """
+    if not isinstance(values, list) or not values or not all(isinstance(value, int) for value in values):
+        raise TypeError(f"Configuration entry '{context}' must be a non-empty list of integers.")
+    return tuple(values)
+
+
+def _build_model_config(section: Mapping[str, Any], project_root: Path) -> ModelConfig:
+    """Build and validate the ``model`` section.
+
+    Args:
+        section: Parsed ``model`` mapping.
+        project_root: Base directory for relative paths.
+
+    Returns:
+        Validated ModelConfig.
+    """
+    context = "model"
+    dropout = _require(section, "dropout", context)
+    config = ModelConfig(
+        conv_filters=_as_int_tuple(_require(section, "conv_filters", context), f"{context}.conv_filters"),
+        conv_kernels=_as_int_tuple(_require(section, "conv_kernels", context), f"{context}.conv_kernels"),
+        recurrent_units=int(_require(section, "recurrent_units", context)),
+        recurrent_layers=int(_require(section, "recurrent_layers", context)),
+        head_units=int(_require(section, "head_units", context)),
+        conv_dropout=float(_require(dropout, "conv", f"{context}.dropout")),
+        recurrent_dropout=float(_require(dropout, "recurrent", f"{context}.dropout")),
+        head_dropout=float(_require(dropout, "head", f"{context}.dropout")),
+        mc_samples=int(_require(section, "mc_samples", context)),
+        figures_dir=_resolve_path(_require(section, "figures_dir", context), project_root),
+        tables_dir=_resolve_path(_require(section, "tables_dir", context), project_root),
+    )
+    problems = []
+    if len(config.conv_filters) != len(config.conv_kernels):
+        problems.append("conv_filters and conv_kernels must have the same length")
+    if any(kernel < 3 or kernel % 2 == 0 for kernel in config.conv_kernels):
+        problems.append("conv_kernels must be odd and at least 3")
+    if min(config.conv_filters) < 1 or config.recurrent_units < 1 or config.head_units < 1:
+        problems.append("filters and units must be positive")
+    if config.recurrent_layers < 1:
+        problems.append("recurrent_layers must be at least 1")
+    if not all(0.0 <= rate < 1.0 for rate in (config.conv_dropout, config.recurrent_dropout, config.head_dropout)):
+        problems.append("dropout rates must be in [0, 1)")
+    if config.mc_samples < 1:
+        problems.append("mc_samples must be at least 1")
+    if problems:
+        raise ValueError("Invalid model configuration: " + "; ".join(problems) + ".")
+    return config
+
+
 def _build_output_config(section: Mapping[str, Any], project_root: Path) -> OutputConfig:
     """Build the ``output`` section.
 
@@ -768,6 +904,8 @@ def load_config(config_path: str | Path, project_root: str | Path | None = None)
         exploration=_build_exploration_config(_require(raw, "exploration", "root")),
         waveforms=_build_waveform_config(_require(raw, "waveforms", "root"), root),
         preprocessing=_build_preprocessing_config(_require(raw, "preprocessing", "root"), root),
+        split=_build_split_config(_require(raw, "split", "root"), root),
+        model=_build_model_config(_require(raw, "model", "root"), root),
         output=_build_output_config(_require(raw, "output", "root"), root),
     )
 

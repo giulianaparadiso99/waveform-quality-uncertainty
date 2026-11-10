@@ -285,6 +285,34 @@ preprocessing:
   figures_dir: outputs/figures/02_preprocessing
   tables_dir: outputs/tables/02_preprocessing
 
+# Training/validation split of ESM25 (the test set is made of later ESM records, outside ESM25).
+# Records are grouped by event (columns.event_id) and stratified by label.
+split:
+  validation_fraction: 0.2
+  random_seed: 42
+  output_file: data/splits/esm25_train_validation.csv
+  tables_dir: outputs/tables/03_split
+
+# Convolutional-recurrent network adapted from CRED (Mousavi et al., 2019): strided convolution +
+# residual block per stage, bidirectional LSTM layers along time, mean over time, dense head.
+# Dropout everywhere, so that MC dropout samples the whole network.
+model:
+  # One stage per entry; each stage halves frequencies and times. CRED: 8 and 16 filters, kernels 9 and 5.
+  conv_filters: [8, 16]
+  conv_kernels: [9, 5]
+  recurrent_units: 64
+  recurrent_layers: 2
+  head_units: 64
+  dropout:
+    # Channel dropout after each convolutional stage.
+    conv: 0.1
+    recurrent: 0.3
+    head: 0.5
+  # Stochastic forward passes for MC dropout predictions.
+  mc_samples: 50
+  figures_dir: outputs/figures/04_model
+  tables_dir: outputs/tables/04_model
+
 output:
   figures_dir: outputs/figures/01_exploration
   tables_dir: outputs/tables/01_exploration
