@@ -340,6 +340,23 @@ training:
   calibration_bins: 15
   runs_dir: runs
 
+# Evaluation of a training run (notebook 06), from the validation predictions saved by notebook 05.
+evaluation:
+  # Run folder inside training.runs_dir, or latest = most recent run of training.representation.
+  run: latest
+  # deterministic_entropy: entropy of the deterministic prediction (baseline without MC dropout);
+  # probability_std, predictive_entropy, mutual_information: from the MC dropout passes.
+  uncertainty_measures: [deterministic_entropy, probability_std, predictive_entropy, mutual_information]
+  # Groups of equal size, by increasing uncertainty, for the error rate.
+  error_groups: 10
+  # Rejection curves: records kept from 1 down to min_retained_fraction, in steps of retained_step.
+  min_retained_fraction: 0.2
+  retained_step: 0.05
+  reported_retained_fractions: [0.9, 0.8, 0.7, 0.5]
+  # Random-rejection baseline averaged over this many orderings.
+  random_repeats: 50
+  random_seed: 42
+
 output:
   figures_dir: outputs/figures/01_exploration
   tables_dir: outputs/tables/01_exploration
