@@ -7,7 +7,7 @@ so the same code runs on the development subset and on the full dataset.
 
 from __future__ import annotations
 
-from collections.abc import Iterable
+from collections.abc import Iterable, Sequence
 from dataclasses import asdict, dataclass
 from pathlib import Path
 
@@ -17,7 +17,7 @@ import pandas as pd
 from tqdm.auto import tqdm
 
 from wqu.config import PreprocessingConfig
-from wqu.data.loading import CV_COMPONENTS
+from wqu.data.loading import CV_COMPONENTS, read_metadata_csv
 from wqu.preprocessing.anchoring import window_anchor
 from wqu.preprocessing.transform import (
     TimeFrequencyGrid,
@@ -263,8 +263,34 @@ def preprocess_and_store(
                     progress.update(1)
     temporary_path.replace(output_path)
     table = records.join(pd.DataFrame.from_dict(rows, orient="index"))
-    table.to_csv(output_path.with_name("records.csv"))
+    table.to_csv(feature_records_path(output_path))
     return table
+
+
+def feature_records_path(features_path: Path) -> Path:
+    """Path of the record table written next to a feature file.
+
+    Args:
+        features_path: Feature file written by ``preprocess_and_store``.
+
+    Returns:
+        Path of ``records.csv``.
+    """
+    return features_path.with_name("records.csv")
+
+
+def read_feature_records(features_path: Path, text_columns: Sequence[str]) -> pd.DataFrame:
+    """Read the record table of a feature file with code-like columns as text.
+
+    Args:
+        features_path: Feature file written by ``preprocess_and_store``.
+        text_columns: Columns to read as strings (``columns.text`` of the configuration).
+
+    Returns:
+        Table indexed like the metadata of the records, with ``feature_index``.
+    """
+    table = read_metadata_csv(feature_records_path(features_path), text_columns)
+    return table.set_index(table.columns[0]).rename_axis(None)
 
 
 def read_features(path: Path, representation: str, rows: np.ndarray) -> tuple[np.ndarray, TimeFrequencyGrid]:

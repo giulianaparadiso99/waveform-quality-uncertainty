@@ -310,6 +310,43 @@ class ModelConfig:
 
 
 @dataclass(frozen=True)
+class TrainingConfig:
+    """Training of the classifier.
+
+    Attributes:
+        representation: ``spectrogram`` or ``scalogram``.
+        feature_source: Waveform source whose feature file is used (``dev_subset`` or ``seisbench``).
+        batch_size: Records per batch.
+        learning_rate: Initial learning rate of Adam.
+        weight_decay: Weight decay of Adam.
+        max_epochs: Largest number of epochs.
+        lr_factor: Factor applied to the learning rate when the validation loss stalls.
+        lr_patience: Epochs without improvement before reducing the learning rate.
+        early_stopping_patience: Epochs without improvement before stopping.
+        num_workers: Data-loading worker processes (0 = main process).
+        device: ``auto`` (Apple GPU, then CUDA, then CPU), ``cpu``, ``mps`` or ``cuda``.
+        random_seed: Seed of weights, batch order and dropout.
+        calibration_bins: Bins of the expected calibration error.
+        runs_dir: Directory where every run gets its own folder.
+    """
+
+    representation: str
+    feature_source: str
+    batch_size: int
+    learning_rate: float
+    weight_decay: float
+    max_epochs: int
+    lr_factor: float
+    lr_patience: int
+    early_stopping_patience: int
+    num_workers: int
+    device: str
+    random_seed: int
+    calibration_bins: int
+    runs_dir: Path
+
+
+@dataclass(frozen=True)
 class OutputConfig:
     """Output directories for figures and tables."""
 
@@ -328,6 +365,7 @@ class ProjectConfig:
     preprocessing: PreprocessingConfig
     split: SplitConfig
     model: ModelConfig
+    training: TrainingConfig
     output: OutputConfig
 
 
@@ -866,6 +904,51 @@ def _build_model_config(section: Mapping[str, Any], project_root: Path) -> Model
     return config
 
 
+def _build_training_config(section: Mapping[str, Any], project_root: Path) -> TrainingConfig:
+    """Build and validate the ``training`` section.
+
+    Args:
+        section: Parsed ``training`` mapping.
+        project_root: Base directory for relative paths.
+
+    Returns:
+        Validated TrainingConfig.
+    """
+    context = "training"
+    config = TrainingConfig(
+        representation=str(_require(section, "representation", context)),
+        feature_source=str(_require(section, "feature_source", context)),
+        batch_size=int(_require(section, "batch_size", context)),
+        learning_rate=float(_require(section, "learning_rate", context)),
+        weight_decay=float(_require(section, "weight_decay", context)),
+        max_epochs=int(_require(section, "max_epochs", context)),
+        lr_factor=float(_require(section, "lr_factor", context)),
+        lr_patience=int(_require(section, "lr_patience", context)),
+        early_stopping_patience=int(_require(section, "early_stopping_patience", context)),
+        num_workers=int(_require(section, "num_workers", context)),
+        device=str(_require(section, "device", context)),
+        random_seed=int(_require(section, "random_seed", context)),
+        calibration_bins=int(_require(section, "calibration_bins", context)),
+        runs_dir=_resolve_path(_require(section, "runs_dir", context), project_root),
+    )
+    problems = []
+    if config.representation not in ("spectrogram", "scalogram"):
+        problems.append("representation must be spectrogram or scalogram")
+    if config.feature_source not in VALID_WAVEFORM_SOURCES:
+        problems.append(f"feature_source must be one of {VALID_WAVEFORM_SOURCES}")
+    if config.device not in ("auto", "cpu", "mps", "cuda"):
+        problems.append("device must be auto, cpu, mps or cuda")
+    if min(config.batch_size, config.max_epochs, config.calibration_bins) < 1:
+        problems.append("batch_size, max_epochs and calibration_bins must be positive")
+    if config.learning_rate <= 0 or config.weight_decay < 0 or not 0.0 < config.lr_factor < 1.0:
+        problems.append("learning_rate must be positive, weight_decay non-negative, lr_factor in (0, 1)")
+    if min(config.lr_patience, config.early_stopping_patience, config.num_workers) < 0:
+        problems.append("patiences and num_workers must be non-negative")
+    if problems:
+        raise ValueError("Invalid training configuration: " + "; ".join(problems) + ".")
+    return config
+
+
 def _build_output_config(section: Mapping[str, Any], project_root: Path) -> OutputConfig:
     """Build the ``output`` section.
 
@@ -915,6 +998,7 @@ def load_config(config_path: str | Path, project_root: str | Path | None = None)
         preprocessing=_build_preprocessing_config(_require(raw, "preprocessing", "root"), root),
         split=_build_split_config(_require(raw, "split", "root"), root),
         model=_build_model_config(_require(raw, "model", "root"), root),
+        training=_build_training_config(_require(raw, "training", "root"), root),
         output=_build_output_config(_require(raw, "output", "root"), root),
     )
 

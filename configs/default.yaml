@@ -317,6 +317,29 @@ model:
   figures_dir: outputs/figures/04_model
   tables_dir: outputs/tables/04_model
 
+# Training of the classifier (notebook 05). Each run is saved in runs_dir/<representation>_<date-time>/ with the
+# configuration, the normalization statistics, the best model, the history per epoch and the figures.
+training:
+  representation: spectrogram
+  # dev_subset to test the pipeline, seisbench for the full ESM25.
+  feature_source: dev_subset
+  batch_size: 64
+  # Adam, as in Shalabi et al.; learning rate halved when the validation loss does not improve for lr_patience epochs.
+  learning_rate: 1.0e-3
+  weight_decay: 1.0e-4
+  max_epochs: 50
+  lr_factor: 0.5
+  lr_patience: 3
+  # Stop after this many epochs without improvement of the validation loss; the best model is kept.
+  early_stopping_patience: 10
+  num_workers: 0
+  # auto = Apple GPU (mps) if available, then CUDA, then CPU.
+  device: auto
+  random_seed: 42
+  # Bins of the expected calibration error (ECE).
+  calibration_bins: 15
+  runs_dir: runs
+
 output:
   figures_dir: outputs/figures/01_exploration
   tables_dir: outputs/tables/01_exploration

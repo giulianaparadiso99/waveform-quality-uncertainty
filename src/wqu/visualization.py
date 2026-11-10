@@ -19,6 +19,7 @@ import numpy as np
 import pandas as pd
 from matplotlib.axes import Axes
 from matplotlib.figure import Figure
+from matplotlib.ticker import MaxNLocator
 
 LABEL_COLORS: Mapping[int, str] = {0: "#2a78d6", 1: "#eb6834"}
 # Categorical colors for groups other than the two classes (fixed order, never cycled).
@@ -961,5 +962,83 @@ def plot_grad_cam(
     profile_ax.set_ylabel("Grad-CAM")
     profile_ax.grid(visible=False)
     profile_ax.legend(loc="upper right", fontsize=8)
+    figure.suptitle(title, x=0.01, ha="left")
+    return figure
+
+
+TRAINING_SET_COLORS: Mapping[str, str] = {"train": NEUTRAL_COLOR, "validation": GROUP_COLORS[0]}
+TRAINING_METRIC_LABELS: Mapping[str, str] = {
+    "loss": "weighted BCE loss",
+    "auc": "ROC AUC",
+    "balanced_accuracy": "balanced accuracy",
+    "ece": "ECE (prior-corrected)",
+}
+
+
+def plot_training_curve(history: pd.DataFrame, metric: str, best_epoch: int, ax: Axes) -> Axes:
+    """Training and validation values of one metric per epoch, with the best epoch marked.
+
+    Args:
+        history: Training history with ``epoch``, ``train_<metric>`` and ``validation_<metric>``.
+        metric: Metric name (a key of ``TRAINING_METRIC_LABELS``).
+        best_epoch: Epoch of the saved model (vertical line).
+        ax: Axes to draw on.
+
+    Returns:
+        The Axes.
+    """
+    for set_name, color in TRAINING_SET_COLORS.items():
+        ax.plot(history["epoch"], history[f"{set_name}_{metric}"], color=color, linewidth=LINE_WIDTH,
+                marker="o", markersize=3, label=set_name)
+    ax.axvline(best_epoch, color=REFERENCE_LINE_COLOR, linestyle="--", linewidth=1.0, label=f"best epoch ({best_epoch})")
+    ax.set_xlabel("epoch")
+    ax.xaxis.set_major_locator(MaxNLocator(integer=True))
+    ax.set_ylabel(TRAINING_METRIC_LABELS[metric])
+    ax.legend(fontsize=8)
+    return ax
+
+
+def plot_learning_rate(history: pd.DataFrame, best_epoch: int, ax: Axes) -> Axes:
+    """Learning rate used at every epoch (logarithmic axis).
+
+    Args:
+        history: Training history with ``epoch`` and ``learning_rate``.
+        best_epoch: Epoch of the saved model (vertical line).
+        ax: Axes to draw on.
+
+    Returns:
+        The Axes.
+    """
+    ax.plot(history["epoch"], history["learning_rate"], drawstyle="steps-post", color=NEUTRAL_COLOR,
+            linewidth=LINE_WIDTH, marker="o", markersize=3)
+    ax.axvline(best_epoch, color=REFERENCE_LINE_COLOR, linestyle="--", linewidth=1.0)
+    ax.set_yscale("log")
+    ax.set_xlabel("epoch")
+    ax.xaxis.set_major_locator(MaxNLocator(integer=True))
+    ax.set_ylabel("learning rate")
+    return ax
+
+
+def plot_training_history(history: pd.DataFrame, best_epoch: int, title: str) -> Figure:
+    """Overview of a training run: loss and learning rate on top, AUC, balanced accuracy and ECE below.
+
+    The training values come from the passes made while training (dropout active,
+    weights changing during the epoch); the validation values from a deterministic
+    pass at the end of the epoch.
+
+    Args:
+        history: Output of ``fit`` (or ``history.csv`` of a run).
+        best_epoch: Epoch of the saved model.
+        title: Figure title.
+
+    Returns:
+        The Figure.
+    """
+    figure = plt.figure(figsize=(13, 7.5), constrained_layout=True)
+    layout = figure.add_gridspec(2, 3)
+    plot_training_curve(history, "loss", best_epoch, figure.add_subplot(layout[0, :2]))
+    plot_learning_rate(history, best_epoch, figure.add_subplot(layout[0, 2]))
+    for position, metric in enumerate(("auc", "balanced_accuracy", "ece")):
+        plot_training_curve(history, metric, best_epoch, figure.add_subplot(layout[1, position]))
     figure.suptitle(title, x=0.01, ha="left")
     return figure
