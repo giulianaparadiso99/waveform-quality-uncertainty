@@ -1042,3 +1042,102 @@ def plot_training_history(history: pd.DataFrame, best_epoch: int, title: str) ->
         plot_training_curve(history, metric, best_epoch, figure.add_subplot(layout[1, position]))
     figure.suptitle(title, x=0.01, ha="left")
     return figure
+
+
+RELIABILITY_COLORS: Mapping[str, str] = {"deterministic": NEUTRAL_COLOR, "mc_dropout": GROUP_COLORS[0]}
+# The deterministic baseline is neutral; the MC dropout measures take the categorical colors.
+UNCERTAINTY_MEASURE_COLORS: Mapping[str, str] = {
+    "deterministic_entropy": NEUTRAL_COLOR,
+    "predictive_entropy": GROUP_COLORS[0],
+    "probability_std": GROUP_COLORS[1],
+    "mutual_information": GROUP_COLORS[2],
+}
+REJECTION_BASELINE_STYLES: Mapping[str, Mapping[str, str]] = {
+    "random": {"color": REFERENCE_LINE_COLOR, "linestyle": "--"},
+    "oracle": {"color": WINDOW_TRACE_COLOR, "linestyle": ":"},
+}
+
+
+def plot_reliability_diagram(tables: Mapping[str, pd.DataFrame], ece: Mapping[str, float], title: str) -> Figure:
+    """Reliability diagram (observed bad rate against mean predicted probability) with bin counts below.
+
+    Args:
+        tables: Mapping from prediction name (keys of ``RELIABILITY_COLORS``) to the output of
+            ``reliability_table``.
+        ece: Expected calibration error of each prediction (shown in the legend).
+        title: Figure title.
+
+    Returns:
+        The Figure.
+    """
+    figure, (diagram, counts) = plt.subplots(
+        2, 1, figsize=(6.5, 7), sharex=True, gridspec_kw={"height_ratios": [3, 1]}, constrained_layout=True
+    )
+    diagram.plot([0, 1], [0, 1], color=REFERENCE_LINE_COLOR, linestyle="--", linewidth=1.0, label="perfect calibration")
+    bin_width = float(next(iter(tables.values()))["bin_upper"].iloc[0])
+    offsets = np.linspace(-0.2, 0.2, len(tables)) * bin_width
+    for offset, (name, table) in zip(offsets, tables.items()):
+        filled = table[table["records"] > 0]
+        color = RELIABILITY_COLORS[name]
+        diagram.plot(filled["mean_probability"], filled["observed_bad_rate"], color=color, linewidth=LINE_WIDTH,
+                     marker="o", markersize=4, label=f"{name.replace('_', ' ')} (ECE {ece[name]:.3f})")
+        centres = (table["bin_lower"] + table["bin_upper"]) / 2
+        counts.bar(centres + offset, table["records"], width=bin_width / (len(tables) + 1), color=color)
+    diagram.set_xlim(0, 1)
+    diagram.set_ylim(0, 1)
+    diagram.set_ylabel("observed share of bad records")
+    diagram.legend(fontsize=8, loc="upper left")
+    counts.set_xlabel("predicted probability of bad (prior-corrected)")
+    counts.set_ylabel("records")
+    figure.suptitle(title, x=0.01, ha="left")
+    return figure
+
+
+def plot_error_by_uncertainty(tables: Mapping[str, pd.DataFrame], overall_error: float, ax: Axes) -> Axes:
+    """Error rate in groups of increasing uncertainty, one line per uncertainty measure.
+
+    Args:
+        tables: Mapping from measure to the output of ``error_by_uncertainty``.
+        overall_error: Error rate of the MC dropout mean prediction over all records (reference line).
+        ax: Axes to draw on.
+
+    Returns:
+        The Axes.
+    """
+    for measure, table in tables.items():
+        ax.plot(table.index, table["error_rate"], color=UNCERTAINTY_MEASURE_COLORS[measure], linewidth=LINE_WIDTH, marker="o", markersize=4,
+                label=measure.replace("_", " "))
+    ax.axhline(overall_error, color=REFERENCE_LINE_COLOR, linestyle="--", linewidth=1.0,
+               label="overall error rate (MC mean)")
+    ax.xaxis.set_major_locator(MaxNLocator(integer=True))
+    ax.set_xlabel("uncertainty group (1 = least uncertain)")
+    ax.set_ylabel("error rate")
+    ax.set_ylim(bottom=0)
+    ax.legend(fontsize=8)
+    return ax
+
+
+def plot_rejection_curves(curves: pd.DataFrame, metric: str, ax: Axes) -> Axes:
+    """Metric on the retained records against the retained fraction.
+
+    Args:
+        curves: Output of ``rejection_curves``.
+        metric: ``accuracy`` or ``balanced_accuracy``.
+        ax: Axes to draw on.
+
+    Returns:
+        The Axes.
+    """
+    measures = [method for method in curves["method"].unique() if method not in REJECTION_BASELINE_STYLES]
+    for measure in measures:
+        curve = curves[curves["method"] == measure]
+        ax.plot(curve["retained_fraction"], curve[metric], color=UNCERTAINTY_MEASURE_COLORS[measure], linewidth=LINE_WIDTH,
+                label=measure.replace("_", " "))
+    for method, style in REJECTION_BASELINE_STYLES.items():
+        curve = curves[curves["method"] == method]
+        ax.plot(curve["retained_fraction"], curve[metric], linewidth=1.5, label=method, **style)
+    ax.set_xlim(1.0, curves["retained_fraction"].min())
+    ax.set_xlabel("fraction of records kept (most uncertain discarded first)")
+    ax.set_ylabel(metric.replace("_", " ") + " on kept records")
+    ax.legend(fontsize=8)
+    return ax

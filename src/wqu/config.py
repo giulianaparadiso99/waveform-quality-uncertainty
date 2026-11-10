@@ -19,6 +19,12 @@ VALID_DATA_SOURCES: tuple[str, ...] = ("seisbench", "local_csv")
 VALID_WAVEFORM_SOURCES: tuple[str, ...] = ("dev_subset", "seisbench")
 VALID_ENERGY_CRITERIA: tuple[str, ...] = ("quantile", "share_above")
 VALID_ANCHOR_METHODS: tuple[str, ...] = ("pga", "envelope", "arias", "theoretical", "hybrid")
+VALID_UNCERTAINTY_MEASURES: tuple[str, ...] = (
+    "deterministic_entropy",
+    "probability_std",
+    "predictive_entropy",
+    "mutual_information",
+)
 REQUIRED_LABELS: frozenset[int] = frozenset({0, 1})
 
 
@@ -347,6 +353,32 @@ class TrainingConfig:
 
 
 @dataclass(frozen=True)
+class EvaluationConfig:
+    """Evaluation of predictions and uncertainty of a training run.
+
+    Attributes:
+        run: Run folder name inside ``training.runs_dir``, or ``latest`` for the most
+            recent run of ``training.representation``.
+        uncertainty_measures: Uncertainty measures to compare (see ``VALID_UNCERTAINTY_MEASURES``).
+        error_groups: Groups of equal size (by increasing uncertainty) of the error-rate analysis.
+        min_retained_fraction: Smallest fraction of records kept in the rejection curves.
+        retained_step: Step of the retained fraction in the rejection curves.
+        reported_retained_fractions: Retained fractions listed in the summary table.
+        random_repeats: Random orderings averaged for the random-rejection baseline.
+        random_seed: Seed of the random orderings.
+    """
+
+    run: str
+    uncertainty_measures: tuple[str, ...]
+    error_groups: int
+    min_retained_fraction: float
+    retained_step: float
+    reported_retained_fractions: tuple[float, ...]
+    random_repeats: int
+    random_seed: int
+
+
+@dataclass(frozen=True)
 class OutputConfig:
     """Output directories for figures and tables."""
 
@@ -366,6 +398,7 @@ class ProjectConfig:
     split: SplitConfig
     model: ModelConfig
     training: TrainingConfig
+    evaluation: EvaluationConfig
     output: OutputConfig
 
 
@@ -949,6 +982,44 @@ def _build_training_config(section: Mapping[str, Any], project_root: Path) -> Tr
     return config
 
 
+def _build_evaluation_config(section: Mapping[str, Any]) -> EvaluationConfig:
+    """Build and validate the ``evaluation`` section.
+
+    Args:
+        section: Parsed ``evaluation`` mapping.
+
+    Returns:
+        Validated EvaluationConfig.
+    """
+    context = "evaluation"
+    config = EvaluationConfig(
+        run=str(_require(section, "run", context)),
+        uncertainty_measures=_as_str_tuple(_require(section, "uncertainty_measures", context),
+                                           f"{context}.uncertainty_measures"),
+        error_groups=int(_require(section, "error_groups", context)),
+        min_retained_fraction=float(_require(section, "min_retained_fraction", context)),
+        retained_step=float(_require(section, "retained_step", context)),
+        reported_retained_fractions=_as_positive_float_tuple(
+            _require(section, "reported_retained_fractions", context), f"{context}.reported_retained_fractions"
+        ),
+        random_repeats=int(_require(section, "random_repeats", context)),
+        random_seed=int(_require(section, "random_seed", context)),
+    )
+    problems = []
+    unknown = sorted(set(config.uncertainty_measures) - set(VALID_UNCERTAINTY_MEASURES))
+    if unknown or not config.uncertainty_measures:
+        problems.append(f"uncertainty_measures must be a non-empty subset of {VALID_UNCERTAINTY_MEASURES}")
+    if config.error_groups < 2 or config.random_repeats < 1:
+        problems.append("error_groups must be at least 2 and random_repeats at least 1")
+    if not 0.0 < config.min_retained_fraction < 1.0 or not 0.0 < config.retained_step < 1.0:
+        problems.append("min_retained_fraction and retained_step must be in (0, 1)")
+    if any(not config.min_retained_fraction <= fraction <= 1.0 for fraction in config.reported_retained_fractions):
+        problems.append("reported_retained_fractions must lie between min_retained_fraction and 1")
+    if problems:
+        raise ValueError("Invalid evaluation configuration: " + "; ".join(problems) + ".")
+    return config
+
+
 def _build_output_config(section: Mapping[str, Any], project_root: Path) -> OutputConfig:
     """Build the ``output`` section.
 
@@ -999,6 +1070,7 @@ def load_config(config_path: str | Path, project_root: str | Path | None = None)
         split=_build_split_config(_require(raw, "split", "root"), root),
         model=_build_model_config(_require(raw, "model", "root"), root),
         training=_build_training_config(_require(raw, "training", "root"), root),
+        evaluation=_build_evaluation_config(_require(raw, "evaluation", "root")),
         output=_build_output_config(_require(raw, "output", "root"), root),
     )
 

@@ -34,6 +34,8 @@ from wqu.training.metrics import classification_metrics, expected_calibration_er
 BEST_MODEL_FILE = "best_model.pt"
 HISTORY_FILE = "history.csv"
 CONFIG_COPY_FILE = "config.yaml"
+VALIDATION_PREDICTIONS_FILE = "validation_predictions.csv"
+LATEST_RUN = "latest"
 RUN_TIME_FORMAT = "%Y%m%d_%H%M%S"
 
 
@@ -91,6 +93,33 @@ def create_run_dir(runs_dir: Path, representation: str, config_path: Path) -> Pa
     run_dir = runs_dir / f"{representation}_{datetime.now().strftime(RUN_TIME_FORMAT)}"
     run_dir.mkdir(parents=True, exist_ok=False)
     shutil.copyfile(config_path, run_dir / CONFIG_COPY_FILE)
+    return run_dir
+
+
+def find_run_dir(runs_dir: Path, representation: str, run: str) -> Path:
+    """Folder of a completed run (one with validation predictions).
+
+    Args:
+        runs_dir: Parent folder of all runs.
+        representation: Representation of the run, used when ``run`` is ``latest``.
+        run: Folder name, or ``latest`` for the most recent run of ``representation``.
+
+    Returns:
+        Path of the run folder.
+
+    Raises:
+        FileNotFoundError: If the run does not exist or has no validation predictions.
+    """
+    if run == LATEST_RUN:
+        candidates = sorted(
+            path for path in runs_dir.glob(f"{representation}_*") if (path / VALIDATION_PREDICTIONS_FILE).is_file()
+        )
+        if not candidates:
+            raise FileNotFoundError(f"No completed {representation} run in {runs_dir}.")
+        return candidates[-1]
+    run_dir = runs_dir / run
+    if not (run_dir / VALIDATION_PREDICTIONS_FILE).is_file():
+        raise FileNotFoundError(f"{run_dir} does not contain {VALIDATION_PREDICTIONS_FILE}.")
     return run_dir
 
 

@@ -287,10 +287,11 @@ def read_feature_records(features_path: Path, text_columns: Sequence[str]) -> pd
         text_columns: Columns to read as strings (``columns.text`` of the configuration).
 
     Returns:
-        Table indexed like the metadata of the records, with ``feature_index``.
+        Table indexed like the metadata of the records, with ``feature_index`` (defragmented copy,
+        so that columns can be added without performance warnings).
     """
     table = read_metadata_csv(feature_records_path(features_path), text_columns)
-    return table.set_index(table.columns[0]).rename_axis(None)
+    return table.set_index(table.columns[0]).rename_axis(None).copy()
 
 
 def read_features(path: Path, representation: str, rows: np.ndarray) -> tuple[np.ndarray, TimeFrequencyGrid]:

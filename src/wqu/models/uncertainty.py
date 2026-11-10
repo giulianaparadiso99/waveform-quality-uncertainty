@@ -13,6 +13,8 @@ import torch
 from torch import nn
 from torch.utils.data import DataLoader
 
+from wqu.models.loss import prior_corrected_probability
+
 PROBABILITY_EPSILON = 1e-12
 
 DROPOUT_TYPES: tuple[type[nn.Module], ...] = (nn.Dropout, nn.Dropout1d, nn.Dropout2d, nn.Dropout3d)
@@ -48,6 +50,23 @@ def mc_dropout_probabilities(model: nn.Module, inputs: torch.Tensor, n_samples: 
     """
     enable_mc_dropout(model)
     return torch.stack([torch.sigmoid(model(inputs)) for _ in range(n_samples)])
+
+
+@torch.no_grad()
+def deterministic_probabilities(model: nn.Module, loader: DataLoader, device: str) -> np.ndarray:
+    """Probabilities of the bad class from one pass in evaluation mode (dropout off).
+
+    Args:
+        model: Network returning logits.
+        loader: Loader (not shuffled, so that rows follow the dataset order).
+        device: Device name.
+
+    Returns:
+        Array of shape (records,).
+    """
+    model.to(device).eval()
+    batches = [torch.sigmoid(model(inputs.to(device))).cpu() for inputs, _ in loader]
+    return torch.cat(batches).numpy()
 
 
 def mc_dropout_predictions(model: nn.Module, loader: DataLoader, n_samples: int, device: str) -> np.ndarray:
@@ -106,3 +125,27 @@ def uncertainty_summary(samples: np.ndarray) -> pd.DataFrame:
             "mutual_information": predictive - aleatoric,
         }
     )
+
+
+def prediction_table(model: nn.Module, loader: DataLoader, n_samples: int, device: str, bad_weight: float) -> pd.DataFrame:
+    """Deterministic and MC dropout predictions with their uncertainty, one row per record.
+
+    Args:
+        model: Trained network.
+        loader: Loader (not shuffled).
+        n_samples: MC dropout passes.
+        device: Device name.
+        bad_weight: Weight of the bad class used in training (for the prior correction).
+
+    Returns:
+        Table with ``probability_deterministic``, ``deterministic_entropy``, the columns of
+        ``uncertainty_summary`` and the prior-corrected probabilities
+        ``probability_deterministic_corrected`` and ``probability_mean_corrected``.
+    """
+    deterministic = deterministic_probabilities(model, loader, device)
+    table = uncertainty_summary(mc_dropout_predictions(model, loader, n_samples, device))
+    table.insert(0, "probability_deterministic", deterministic)
+    table.insert(1, "deterministic_entropy", binary_entropy(deterministic))
+    table["probability_deterministic_corrected"] = prior_corrected_probability(deterministic, bad_weight)
+    table["probability_mean_corrected"] = prior_corrected_probability(table["probability_mean"].to_numpy(), bad_weight)
+    return table
