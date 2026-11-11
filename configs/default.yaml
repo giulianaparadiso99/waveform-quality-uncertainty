@@ -322,7 +322,7 @@ model:
 training:
   representation: spectrogram
   # dev_subset to test the pipeline, seisbench for the full ESM25.
-  feature_source: dev_subset
+  feature_source: seisbench
   batch_size: 64
   # Adam, as in Shalabi et al.; learning rate halved when the validation loss does not improve for lr_patience epochs.
   learning_rate: 1.0e-3
