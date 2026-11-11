@@ -320,7 +320,7 @@ model:
 # Training of the classifier (notebook 05). Each run is saved in runs_dir/<representation>_<date-time>/ with the
 # configuration, the normalization statistics, the best model, the history per epoch and the figures.
 training:
-  representation: spectrogram
+  representation: scalogram
   # dev_subset to test the pipeline, seisbench for the full ESM25.
   feature_source: dev_subset
   batch_size: 64
