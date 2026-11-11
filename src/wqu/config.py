@@ -379,6 +379,33 @@ class EvaluationConfig:
 
 
 @dataclass(frozen=True)
+class ExplanationConfig:
+    """Grad-CAM analysis of a training run by prediction category.
+
+    Records are grouped by correctness of the MC dropout prediction, level of
+    uncertainty (below ``low_quantile``, above ``high_quantile`` or in between) and
+    true class.
+
+    Attributes:
+        uncertainty_measure: Measure defining the uncertainty level (see ``VALID_UNCERTAINTY_MEASURES``).
+        low_quantile: Records below this quantile of the measure have low uncertainty.
+        high_quantile: Records above this quantile of the measure have high uncertainty.
+        records_per_category: Records drawn per category for the single-record figures.
+        mc_samples: MC dropout passes per Grad-CAM map.
+        batch_size: Records per Grad-CAM batch.
+        random_seed: Seed of the record draw.
+    """
+
+    uncertainty_measure: str
+    low_quantile: float
+    high_quantile: float
+    records_per_category: int
+    mc_samples: int
+    batch_size: int
+    random_seed: int
+
+
+@dataclass(frozen=True)
 class OutputConfig:
     """Output directories for figures and tables."""
 
@@ -399,6 +426,7 @@ class ProjectConfig:
     model: ModelConfig
     training: TrainingConfig
     evaluation: EvaluationConfig
+    explanation: ExplanationConfig
     output: OutputConfig
 
 
@@ -1020,6 +1048,37 @@ def _build_evaluation_config(section: Mapping[str, Any]) -> EvaluationConfig:
     return config
 
 
+def _build_explanation_config(section: Mapping[str, Any]) -> ExplanationConfig:
+    """Build and validate the ``explanation`` section.
+
+    Args:
+        section: Parsed ``explanation`` mapping.
+
+    Returns:
+        Validated ExplanationConfig.
+    """
+    context = "explanation"
+    config = ExplanationConfig(
+        uncertainty_measure=str(_require(section, "uncertainty_measure", context)),
+        low_quantile=float(_require(section, "low_quantile", context)),
+        high_quantile=float(_require(section, "high_quantile", context)),
+        records_per_category=int(_require(section, "records_per_category", context)),
+        mc_samples=int(_require(section, "mc_samples", context)),
+        batch_size=int(_require(section, "batch_size", context)),
+        random_seed=int(_require(section, "random_seed", context)),
+    )
+    problems = []
+    if config.uncertainty_measure not in VALID_UNCERTAINTY_MEASURES:
+        problems.append(f"uncertainty_measure must be one of {VALID_UNCERTAINTY_MEASURES}")
+    if not 0.0 < config.low_quantile < config.high_quantile < 1.0:
+        problems.append("quantiles must satisfy 0 < low_quantile < high_quantile < 1")
+    if min(config.records_per_category, config.mc_samples, config.batch_size) < 1:
+        problems.append("records_per_category, mc_samples and batch_size must be positive")
+    if problems:
+        raise ValueError("Invalid explanation configuration: " + "; ".join(problems) + ".")
+    return config
+
+
 def _build_output_config(section: Mapping[str, Any], project_root: Path) -> OutputConfig:
     """Build the ``output`` section.
 
@@ -1071,6 +1130,7 @@ def load_config(config_path: str | Path, project_root: str | Path | None = None)
         model=_build_model_config(_require(raw, "model", "root"), root),
         training=_build_training_config(_require(raw, "training", "root"), root),
         evaluation=_build_evaluation_config(_require(raw, "evaluation", "root")),
+        explanation=_build_explanation_config(_require(raw, "explanation", "root")),
         output=_build_output_config(_require(raw, "output", "root"), root),
     )
 

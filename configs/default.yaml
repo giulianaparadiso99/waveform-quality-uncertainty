@@ -320,7 +320,7 @@ model:
 # Training of the classifier (notebook 05). Each run is saved in runs_dir/<representation>_<date-time>/ with the
 # configuration, the normalization statistics, the best model, the history per epoch and the figures.
 training:
-  representation: scalogram
+  representation: spectrogram
   # dev_subset to test the pipeline, seisbench for the full ESM25.
   feature_source: dev_subset
   batch_size: 64
@@ -355,6 +355,20 @@ evaluation:
   reported_retained_fractions: [0.9, 0.8, 0.7, 0.5]
   # Random-rejection baseline averaged over this many orderings.
   random_repeats: 50
+  random_seed: 42
+
+# Grad-CAM analysis by prediction category (notebook 07), on the run chosen in evaluation.run.
+# Categories: MC prediction right or wrong x uncertainty low / middle / high x true class.
+explanation:
+  uncertainty_measure: predictive_entropy
+  # Low uncertainty below low_quantile, high above high_quantile of the measure.
+  low_quantile: 0.1
+  high_quantile: 0.9
+  # Records drawn at random per category (low and high uncertainty only) for single-record figures.
+  records_per_category: 5
+  # MC dropout passes per map, and records per Grad-CAM batch (memory: mc_samples x batch_size maps).
+  mc_samples: 20
+  batch_size: 32
   random_seed: 42
 
 output:

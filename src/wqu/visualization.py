@@ -1141,3 +1141,138 @@ def plot_rejection_curves(curves: pd.DataFrame, metric: str, ax: Axes) -> Axes:
     ax.set_ylabel(metric.replace("_", " ") + " on kept records")
     ax.legend(fontsize=8)
     return ax
+
+
+# Categories of the Grad-CAM analysis: colour by correctness and uncertainty level,
+# line style by true class.
+CATEGORY_COLORS: Mapping[tuple[str, str], str] = {
+    ("wrong", "low"): GROUP_COLORS[2],
+    ("wrong", "middle"): OUTSIDE_TRACE_COLOR,
+    ("wrong", "high"): GROUP_COLORS[1],
+    ("right", "low"): GROUP_COLORS[0],
+    ("right", "middle"): REFERENCE_LINE_COLOR,
+    ("right", "high"): GROUP_COLORS[3],
+}
+TRUE_CLASS_LINE_STYLES: Mapping[str, str] = {"good": "-", "bad": "--"}
+CATEGORY_MAP_COLORMAP = "magma"
+
+
+def _category_parts(category: str) -> tuple[str, str, str]:
+    """Split a category name ``correctness-level-class`` into its parts."""
+    correctness, level, true_class = category.split("-")
+    return correctness, level, true_class
+
+
+def plot_category_mean_maps(
+    mean_maps: Mapping[str, np.ndarray],
+    counts: Mapping[str, int],
+    categories: Sequence[str],
+    frequency_edges_hz: np.ndarray,
+    times_s: np.ndarray,
+    pre_anchor_s: float,
+    title: str,
+) -> Figure:
+    """Mean normalized Grad-CAM map of each category, on a common colour scale.
+
+    Rows: correctness and uncertainty level; columns: true class (good, bad). The dashed
+    line marks the anchor.
+
+    Args:
+        mean_maps: Mapping from category to mean map, shape (frequencies, times).
+        counts: Records per category.
+        categories: Categories to draw (missing ones are left blank).
+        frequency_edges_hz: Band edges of the grid.
+        times_s: Time-bin centres (seconds from the window start).
+        pre_anchor_s: Seconds of the window before the anchor.
+        title: Figure title.
+
+    Returns:
+        The Figure.
+    """
+    rows = list(dict.fromkeys(name.rsplit("-", 1)[0] for name in categories))
+    columns = list(dict.fromkeys(_category_parts(name)[2] for name in categories))
+    figure, axes = plt.subplots(len(rows), len(columns), figsize=(5.5 * len(columns), 2.6 * len(rows)),
+                                sharex=True, sharey=True, constrained_layout=True, squeeze=False)
+    available = [mean_maps[name] for name in categories if name in mean_maps]
+    vmax = max(float(values.max()) for values in available) if available else 1.0
+    time_edges = np.concatenate((times_s - (times_s[1] - times_s[0]) / 2, [times_s[-1] + (times_s[1] - times_s[0]) / 2]))
+    mesh = None
+    for row, prefix in enumerate(rows):
+        for column, true_class in enumerate(columns):
+            ax = axes[row, column]
+            name = f"{prefix}-{true_class}"
+            ax.set_yscale("log")
+            ax.grid(visible=False)
+            if name not in mean_maps:
+                ax.set_title(f"{name}: no records", loc="left", fontsize=9)
+                continue
+            mesh = ax.pcolormesh(time_edges, frequency_edges_hz, mean_maps[name], cmap=CATEGORY_MAP_COLORMAP,
+                                 vmin=0.0, vmax=vmax, shading="flat")
+            ax.axvline(pre_anchor_s, color="white", linestyle="--", linewidth=1.0)
+            ax.set_title(f"{name} ({counts.get(name, 0)} records)", loc="left", fontsize=9)
+    for ax in axes[-1, :]:
+        ax.set_xlabel("time from window start (s)")
+    for ax in axes[:, 0]:
+        ax.set_ylabel("frequency (Hz)")
+    if mesh is not None:
+        figure.colorbar(mesh, ax=axes, label="mean share of the map per pixel")
+    figure.suptitle(title, x=0.01, ha="left")
+    return figure
+
+
+def plot_category_profiles(
+    profiles: pd.DataFrame, x_values: np.ndarray, x_label: str, log_x: bool, ax: Axes, reference_line: float | None = None
+) -> Axes:
+    """Mean Grad-CAM profile (over time or frequency) of each category.
+
+    Args:
+        profiles: Output of ``mean_profiles_by_category`` (categories as rows).
+        x_values: Bin centres (times or frequencies).
+        x_label: Label of the x axis.
+        log_x: Logarithmic x axis.
+        ax: Axes to draw on.
+        reference_line: Optional x position of a vertical dashed line (e.g. the anchor).
+
+    Returns:
+        The Axes.
+    """
+    for category, values in profiles.iterrows():
+        correctness, level, true_class = _category_parts(category)
+        ax.plot(x_values, values.to_numpy(), color=CATEGORY_COLORS[(correctness, level)],
+                linestyle=TRUE_CLASS_LINE_STYLES[true_class], linewidth=1.6, label=category)
+    if reference_line is not None:
+        ax.axvline(reference_line, color=REFERENCE_LINE_COLOR, linestyle=":", linewidth=1.0)
+    if log_x:
+        ax.set_xscale("log")
+    ax.set_xlabel(x_label)
+    ax.set_ylabel("mean share of the map")
+    ax.legend(fontsize=7, ncol=2)
+    return ax
+
+
+def plot_category_distributions(values: pd.Series, categories: pd.Series, order: Sequence[str], label: str, ax: Axes) -> Axes:
+    """Box plot of one per-record quantity by category.
+
+    Args:
+        values: Quantity of each record.
+        categories: Category of each record, aligned with ``values``.
+        order: Categories in display order (missing ones are skipped).
+        label: Label of the quantity.
+        ax: Axes to draw on.
+
+    Returns:
+        The Axes.
+    """
+    present = [name for name in order if (categories == name).any()]
+    data = [values[(categories == name).to_numpy()].dropna().to_numpy() for name in present]
+    boxes = ax.boxplot(data, patch_artist=True, showfliers=False, widths=0.6)
+    for box, name in zip(boxes["boxes"], present):
+        correctness, level, true_class = _category_parts(name)
+        box.set_facecolor(CATEGORY_COLORS[(correctness, level)])
+        box.set_alpha(0.7)
+        box.set_linestyle(TRUE_CLASS_LINE_STYLES[true_class])
+    for median in boxes["medians"]:
+        median.set_color(WINDOW_TRACE_COLOR)
+    ax.set_xticks(range(1, len(present) + 1), present, rotation=45, ha="right", fontsize=8)
+    ax.set_ylabel(label)
+    return ax
