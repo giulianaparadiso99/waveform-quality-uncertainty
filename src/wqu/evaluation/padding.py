@@ -94,12 +94,20 @@ def padding_separation(shares: pd.Series, labels: np.ndarray) -> dict[str, float
 
 
 def metrics_by_group(
-    probabilities: np.ndarray, labels: np.ndarray, groups: pd.Series, n_bins: int
+    probabilities: np.ndarray,
+    corrected_probabilities: np.ndarray,
+    labels: np.ndarray,
+    groups: pd.Series,
+    n_bins: int,
 ) -> pd.DataFrame:
     """Classification metrics of the network in each padding group.
 
+    AUC and balanced accuracy use the raw probabilities, the calibration error the
+    prior-corrected ones (as in the evaluation notebook).
+
     Args:
-        probabilities: Probabilities of the bad class.
+        probabilities: Raw probabilities of the bad class.
+        corrected_probabilities: Prior-corrected probabilities of the bad class.
         labels: Labels (1 = bad).
         groups: Output of ``padding_groups``, aligned with the probabilities.
         n_bins: Bins of the calibration error.
@@ -114,5 +122,6 @@ def metrics_by_group(
         if not selected.any():
             continue
         metrics = classification_metrics(probabilities[selected], labels[selected], n_bins)
+        metrics["ece"] = classification_metrics(corrected_probabilities[selected], labels[selected], n_bins)["ece"]
         rows[group] = {"records": int(selected.sum()), "bad_rate": float(labels[selected].mean()), **metrics}
     return pd.DataFrame.from_dict(rows, orient="index")

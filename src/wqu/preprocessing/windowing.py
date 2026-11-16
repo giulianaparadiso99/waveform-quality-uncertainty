@@ -7,7 +7,8 @@ Steps, all applied identically to the three components of a record:
 3. take a window from ``pre_anchor_s`` before to ``post_anchor_s`` after the anchor, extended by a
    context margin on both sides (samples outside the stored trace are zeros). With the ``clamped``
    placement the window is then shifted, as little as possible, to lie inside the span recorded by
-   all three components (``clamp_window_bounds``);
+   all three components (``clamp_window_bounds``); with the ``full`` placement the window is the
+   whole stored trace (``full_trace_bounds``) and the anchor is only recorded;
 4. taper the ends of the extended segment;
 5. low-pass filter and resample it.
 
@@ -161,6 +162,22 @@ def window_bounds(
     window_stop = anchor_index + int(round(post_anchor_s * sampling_rate_hz))
     margin = int(round(context_margin_s * sampling_rate_hz))
     return WindowBounds(anchor_index, window_start, window_stop, window_start - margin, window_stop + margin)
+
+
+def full_trace_bounds(anchor_index: int, n_samples: int, sampling_rate_hz: float, context_margin_s: float) -> WindowBounds:
+    """Window covering the whole stored trace, extended by the context margin (zeros outside the trace).
+
+    Args:
+        anchor_index: Sample of the anchor (kept for the statistics, it does not move the window).
+        n_samples: Samples of the stored trace.
+        sampling_rate_hz: Sampling rate of the stored trace.
+        context_margin_s: Extension on each side.
+
+    Returns:
+        WindowBounds with ``window_start = 0`` and ``window_stop = n_samples``.
+    """
+    margin = int(round(context_margin_s * sampling_rate_hz))
+    return WindowBounds(anchor_index, 0, n_samples, -margin, n_samples + margin)
 
 
 def recorded_span(prepared: PreparedTrace) -> tuple[int, int]:

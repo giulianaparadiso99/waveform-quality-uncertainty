@@ -20,11 +20,13 @@ VALID_WAVEFORM_SOURCES: tuple[str, ...] = ("dev_subset", "seisbench")
 VALID_ENERGY_CRITERIA: tuple[str, ...] = ("quantile", "share_above")
 VALID_ANCHOR_METHODS: tuple[str, ...] = ("pga", "envelope", "arias", "theoretical", "hybrid")
 # anchored: fixed position of the anchor in the window (zeros where the window leaves the recording);
-# clamped: the window is shifted, as little as possible, to lie inside the recorded data. The
-# default (anchored) is also used when the configuration does not name a placement.
+# clamped: the window is shifted, as little as possible, to lie inside the recorded data;
+# full: no windowing, the window is the whole stored trace (data.waveform_length_s, padding included).
+# The default (anchored) is also used when the configuration does not name a placement.
 DEFAULT_WINDOW_PLACEMENT = "anchored"
 CLAMPED_WINDOW_PLACEMENT = "clamped"
-VALID_WINDOW_PLACEMENTS: tuple[str, ...] = (DEFAULT_WINDOW_PLACEMENT, CLAMPED_WINDOW_PLACEMENT)
+FULL_WINDOW_PLACEMENT = "full"
+VALID_WINDOW_PLACEMENTS: tuple[str, ...] = (DEFAULT_WINDOW_PLACEMENT, CLAMPED_WINDOW_PLACEMENT, FULL_WINDOW_PLACEMENT)
 VALID_UNCERTAINTY_MEASURES: tuple[str, ...] = (
     "deterministic_entropy",
     "probability_std",
@@ -220,11 +222,14 @@ class AnchoringConfig:
 class PreprocessingConfig:
     """Parameters of the waveform-to-image preprocessing.
 
-    ``window_placement`` is one of ``VALID_WINDOW_PLACEMENTS`` (see ``wqu.preprocessing.windowing``).
+    ``window_placement`` is one of ``VALID_WINDOW_PLACEMENTS`` (see ``wqu.preprocessing.windowing``);
+    ``trace_length_s`` is the fixed length of the stored traces (``data.waveform_length_s``), which
+    is the window length of the ``full`` placement.
     """
 
     anchor_method: str
     window_placement: str
+    trace_length_s: float
     pre_anchor_s: float
     post_anchor_s: float
     context_margin_s: float
@@ -252,7 +257,9 @@ class PreprocessingConfig:
 
     @property
     def window_length_s(self) -> float:
-        """Length of the analysis window in seconds."""
+        """Length of the analysis window in seconds (the whole trace with the ``full`` placement)."""
+        if self.window_placement == FULL_WINDOW_PLACEMENT:
+            return self.trace_length_s
         return self.pre_anchor_s + self.post_anchor_s
 
     @property
@@ -877,7 +884,7 @@ def _build_anchoring_config(section: Mapping[str, Any]) -> AnchoringConfig:
     return config
 
 
-def _build_preprocessing_config(section: Mapping[str, Any], project_root: Path) -> PreprocessingConfig:
+def _build_preprocessing_config(section: Mapping[str, Any], project_root: Path, trace_length_s: float) -> PreprocessingConfig:
     """Build and validate the ``preprocessing`` section.
 
     Checks that the frequency band fits below the anti-alias corner and the new
@@ -887,6 +894,7 @@ def _build_preprocessing_config(section: Mapping[str, Any], project_root: Path) 
     Args:
         section: Parsed ``preprocessing`` mapping.
         project_root: Base directory for relative paths.
+        trace_length_s: Fixed length of the stored traces (``data.waveform_length_s``).
 
     Returns:
         Validated PreprocessingConfig.
@@ -901,6 +909,7 @@ def _build_preprocessing_config(section: Mapping[str, Any], project_root: Path) 
     config = PreprocessingConfig(
         anchor_method=str(_require(window, "anchor", f"{context}.window")),
         window_placement=str(window.get("placement", DEFAULT_WINDOW_PLACEMENT)),
+        trace_length_s=trace_length_s,
         pre_anchor_s=float(_require(window, "pre_anchor_s", f"{context}.window")),
         post_anchor_s=float(_require(window, "post_anchor_s", f"{context}.window")),
         context_margin_s=float(_require(window, "context_margin_s", f"{context}.window")),
@@ -1271,12 +1280,13 @@ def load_config(config_path: str | Path, project_root: str | Path | None = None)
     if not isinstance(raw, Mapping):
         raise TypeError(f"Configuration file {config_path} must contain a mapping.")
 
+    data = _build_data_config(_require(raw, "data", "root"), root)
     return ProjectConfig(
-        data=_build_data_config(_require(raw, "data", "root"), root),
+        data=data,
         columns=_build_columns_config(_require(raw, "columns", "root")),
         exploration=_build_exploration_config(_require(raw, "exploration", "root")),
         waveforms=_build_waveform_config(_require(raw, "waveforms", "root"), root),
-        preprocessing=_build_preprocessing_config(_require(raw, "preprocessing", "root"), root),
+        preprocessing=_build_preprocessing_config(_require(raw, "preprocessing", "root"), root, data.waveform_length_s),
         split=_build_split_config(_require(raw, "split", "root"), root),
         model=_build_model_config(_require(raw, "model", "root"), root),
         training=_build_training_config(_require(raw, "training", "root"), root),

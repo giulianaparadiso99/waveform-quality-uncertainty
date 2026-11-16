@@ -16,7 +16,7 @@ import numpy as np
 import pandas as pd
 from tqdm.auto import tqdm
 
-from wqu.config import CLAMPED_WINDOW_PLACEMENT, DEFAULT_WINDOW_PLACEMENT, PreprocessingConfig
+from wqu.config import CLAMPED_WINDOW_PLACEMENT, DEFAULT_WINDOW_PLACEMENT, FULL_WINDOW_PLACEMENT, PreprocessingConfig
 from wqu.data.loading import CV_COMPONENTS, read_metadata_csv
 from wqu.preprocessing.anchoring import window_anchor
 from wqu.preprocessing.transform import (
@@ -31,6 +31,7 @@ from wqu.preprocessing.windowing import (
     WindowBounds,
     clamp_window_bounds,
     extract_segment,
+    full_trace_bounds,
     prepare_trace,
     recorded_span,
     resample_segment,
@@ -87,7 +88,7 @@ def locate_window(
 
     With ``config.window_placement == "clamped"`` the window is shifted inside the span recorded
     by all components, keeping half an STFT window of data beyond each end when possible
-    (``clamp_window_bounds``).
+    (``clamp_window_bounds``); with ``"full"`` the window is the whole stored trace.
 
     Args:
         trace: Stored trace, shape (components, samples).
@@ -99,6 +100,9 @@ def locate_window(
     Returns:
         Tuple (mean-removed trace, window bounds, window statistics); the statistics include
         ``window_shift_s``, the shift from the window placed around the anchor.
+
+    Raises:
+        ValueError: With the ``full`` placement, if the trace length differs from ``config.trace_length_s``.
     """
     prepared = prepare_trace(trace, tolerance)
     anchor = window_anchor(prepared, record, sampling_rate_hz, config.anchor_method, config.anchoring)
@@ -106,7 +110,15 @@ def locate_window(
         anchor, sampling_rate_hz, config.pre_anchor_s, config.post_anchor_s, config.context_margin_s
     )
     bounds = anchored
-    if config.window_placement == CLAMPED_WINDOW_PLACEMENT:
+    if config.window_placement == FULL_WINDOW_PLACEMENT:
+        n_samples = prepared.centred.shape[-1]
+        if n_samples != int(round(config.trace_length_s * sampling_rate_hz)):
+            raise ValueError(
+                f"Trace of {n_samples / sampling_rate_hz:g} s, but the full window is {config.trace_length_s:g} s "
+                "(data.waveform_length_s)."
+            )
+        bounds = full_trace_bounds(anchor, n_samples, sampling_rate_hz, config.context_margin_s)
+    elif config.window_placement == CLAMPED_WINDOW_PLACEMENT:
         edge_samples = int(round(config.stft_window_s / 2.0 * sampling_rate_hz))
         bounds = clamp_window_bounds(anchored, *recorded_span(prepared), edge_samples)
     statistics = window_cut_statistics(prepared.centred, bounds, tolerance, sampling_rate_hz)
