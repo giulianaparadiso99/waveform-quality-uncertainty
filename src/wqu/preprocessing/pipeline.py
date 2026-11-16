@@ -16,7 +16,7 @@ import numpy as np
 import pandas as pd
 from tqdm.auto import tqdm
 
-from wqu.config import PreprocessingConfig
+from wqu.config import CLAMPED_WINDOW_PLACEMENT, DEFAULT_WINDOW_PLACEMENT, PreprocessingConfig
 from wqu.data.loading import CV_COMPONENTS, read_metadata_csv
 from wqu.preprocessing.anchoring import window_anchor
 from wqu.preprocessing.transform import (
@@ -29,8 +29,10 @@ from wqu.preprocessing.transform import (
 )
 from wqu.preprocessing.windowing import (
     WindowBounds,
+    clamp_window_bounds,
     extract_segment,
     prepare_trace,
+    recorded_span,
     resample_segment,
     taper_segment,
     window_bounds,
@@ -43,6 +45,8 @@ FEATURE_DTYPE = "float16"
 RECORD_KEYS_DATASET = "record_keys"
 PROCESSED_DATASET = "processed"
 STATISTICS_GROUP = "record_statistics"
+WINDOW_PLACEMENT_ATTRIBUTE = "window_placement"
+ANCHOR_OFFSET_COLUMN = "anchor_offset_s"
 
 
 @dataclass(frozen=True)
@@ -81,6 +85,10 @@ def locate_window(
 ) -> tuple[np.ndarray, WindowBounds, dict[str, float]]:
     """Remove the mean of the recorded samples and locate the analysis window around its anchor.
 
+    With ``config.window_placement == "clamped"`` the window is shifted inside the span recorded
+    by all components, keeping half an STFT window of data beyond each end when possible
+    (``clamp_window_bounds``).
+
     Args:
         trace: Stored trace, shape (components, samples).
         record: Metadata row of the record (used by the metadata-based anchoring methods).
@@ -89,14 +97,21 @@ def locate_window(
         tolerance: Zero threshold used to find the zero padding.
 
     Returns:
-        Tuple (mean-removed trace, window bounds, window statistics).
+        Tuple (mean-removed trace, window bounds, window statistics); the statistics include
+        ``window_shift_s``, the shift from the window placed around the anchor.
     """
     prepared = prepare_trace(trace, tolerance)
     anchor = window_anchor(prepared, record, sampling_rate_hz, config.anchor_method, config.anchoring)
-    bounds = window_bounds(
+    anchored = window_bounds(
         anchor, sampling_rate_hz, config.pre_anchor_s, config.post_anchor_s, config.context_margin_s
     )
-    return prepared.centred, bounds, window_cut_statistics(prepared.centred, bounds, tolerance, sampling_rate_hz)
+    bounds = anchored
+    if config.window_placement == CLAMPED_WINDOW_PLACEMENT:
+        edge_samples = int(round(config.stft_window_s / 2.0 * sampling_rate_hz))
+        bounds = clamp_window_bounds(anchored, *recorded_span(prepared), edge_samples)
+    statistics = window_cut_statistics(prepared.centred, bounds, tolerance, sampling_rate_hz)
+    statistics["window_shift_s"] = (bounds.window_start - anchored.window_start) / sampling_rate_hz
+    return prepared.centred, bounds, statistics
 
 
 def process_record(
@@ -199,14 +214,79 @@ def pooled_power_values(
 def feature_file_path(config: PreprocessingConfig, source: str) -> Path:
     """Path of the feature file produced from a waveform source.
 
+    The default placement keeps the original location; every other placement has its own
+    subfolder, so the files of different placements (and their record tables) coexist.
+
     Args:
         config: Preprocessing configuration.
         source: Waveform source name (e.g. ``dev_subset``).
 
     Returns:
-        Path of the HDF5 file.
+        ``output_dir/<source>/features.h5`` or ``output_dir/<source>/<placement>/features.h5``.
     """
-    return config.output_dir / source / "features.h5"
+    folder = config.output_dir / source
+    if config.window_placement != DEFAULT_WINDOW_PLACEMENT:
+        folder = folder / config.window_placement
+    return folder / "features.h5"
+
+
+def feature_window_placement(features_path: Path) -> str:
+    """Window placement stored in a feature file (files written before the option: the default).
+
+    Args:
+        features_path: Feature file written by ``preprocess_and_store``.
+
+    Returns:
+        Placement name.
+    """
+    with h5py.File(features_path, mode="r") as stored:
+        return str(stored.attrs.get(WINDOW_PLACEMENT_ATTRIBUTE, DEFAULT_WINDOW_PLACEMENT))
+
+
+def check_feature_placement(features_path: Path, config: PreprocessingConfig) -> None:
+    """Check that a feature file was written with the configured window placement.
+
+    Args:
+        features_path: Feature file written by ``preprocess_and_store``.
+        config: Preprocessing configuration.
+
+    Raises:
+        FileNotFoundError: If the file does not exist.
+        ValueError: If the stored placement differs from ``config.window_placement``.
+    """
+    if not features_path.is_file():
+        raise FileNotFoundError(
+            f"{features_path} does not exist: run the preprocessing with window placement '{config.window_placement}'."
+        )
+    stored = feature_window_placement(features_path)
+    if stored != config.window_placement:
+        raise ValueError(
+            f"{features_path} was written with window placement '{stored}', "
+            f"but the configuration uses '{config.window_placement}'."
+        )
+
+
+def anchor_offsets(records: pd.DataFrame, config: PreprocessingConfig) -> np.ndarray:
+    """Seconds from the window start to the anchor of each record.
+
+    Record tables written before the placement option have no ``anchor_offset_s`` column; their
+    windows are anchored, so the offset is ``pre_anchor_s`` for every record.
+
+    Args:
+        records: Record table of a feature file (``read_feature_records``).
+        config: Preprocessing configuration of the file.
+
+    Returns:
+        Array of offsets aligned with ``records``.
+
+    Raises:
+        ValueError: If the column is missing and the placement is not the default one.
+    """
+    if ANCHOR_OFFSET_COLUMN in records:
+        return records[ANCHOR_OFFSET_COLUMN].to_numpy(dtype=float)
+    if config.window_placement != DEFAULT_WINDOW_PLACEMENT:
+        raise ValueError(f"The record table has no '{ANCHOR_OFFSET_COLUMN}' column; rerun the preprocessing.")
+    return np.full(len(records), config.pre_anchor_s)
 
 
 def _record_keys(records: pd.DataFrame) -> np.ndarray:

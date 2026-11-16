@@ -5,7 +5,9 @@ Steps, all applied identically to the three components of a record:
 2. find the anchor of the window (see ``wqu.preprocessing.anchoring``; by default the maximum of
    the energy envelope of the three components);
 3. take a window from ``pre_anchor_s`` before to ``post_anchor_s`` after the anchor, extended by a
-   context margin on both sides (samples outside the stored trace are zeros);
+   context margin on both sides (samples outside the stored trace are zeros). With the ``clamped``
+   placement the window is then shifted, as little as possible, to lie inside the span recorded by
+   all three components (``clamp_window_bounds``);
 4. taper the ends of the extended segment;
 5. low-pass filter and resample it.
 
@@ -161,6 +163,62 @@ def window_bounds(
     return WindowBounds(anchor_index, window_start, window_stop, window_start - margin, window_stop + margin)
 
 
+def recorded_span(prepared: PreparedTrace) -> tuple[int, int]:
+    """Samples recorded by all three components: from the end of the longest leading padding
+    to the start of the longest trailing padding.
+
+    Args:
+        prepared: Output of ``prepare_trace``.
+
+    Returns:
+        Tuple (first recorded sample, sample after the last recorded one); empty when start >= stop.
+    """
+    n_samples = prepared.centred.shape[-1]
+    return int(prepared.leading.max()), n_samples - int(prepared.trailing.max())
+
+
+def clamp_window_bounds(bounds: WindowBounds, recorded_start: int, recorded_stop: int, edge_samples: int) -> WindowBounds:
+    """Shift a window, keeping its length, as little as possible to lie inside the recorded span.
+
+    Rules, in order of priority:
+    1. the anchor stays inside the window;
+    2. the window lies inside ``[recorded_start, recorded_stop)``; if the span is shorter than the
+       window, the window contains the whole span instead;
+    3. up to ``edge_samples`` recorded samples are kept beyond each end of the window, reduced
+       equally on both sides when the span is too short for the full amount.
+    Windows already satisfying 2 and 3 are not moved. The context margins move with the window
+    and may still fall outside the recorded span.
+
+    Args:
+        bounds: Window placed around the anchor (output of ``window_bounds``).
+        recorded_start: First sample recorded by all components.
+        recorded_stop: Sample after the last one recorded by all components.
+        edge_samples: Recorded samples wanted beyond each end of the window.
+
+    Returns:
+        Shifted WindowBounds (the input itself if the span is empty).
+    """
+    length = bounds.window_stop - bounds.window_start
+    span = recorded_stop - recorded_start
+    if span <= 0:
+        return bounds
+    if span >= length:
+        edge = min(edge_samples, (span - length) // 2)
+        lowest_start, highest_start = recorded_start + edge, recorded_stop - edge - length
+    else:
+        lowest_start, highest_start = recorded_stop - length, recorded_start
+    start = min(max(bounds.window_start, lowest_start), highest_start)
+    start = min(max(start, bounds.anchor_sample - length + 1), bounds.anchor_sample)
+    shift = start - bounds.window_start
+    return WindowBounds(
+        anchor_sample=bounds.anchor_sample,
+        window_start=start,
+        window_stop=start + length,
+        segment_start=bounds.segment_start + shift,
+        segment_stop=bounds.segment_stop + shift,
+    )
+
+
 def extract_segment(traces: np.ndarray, start: int, stop: int) -> np.ndarray:
     """Copy samples ``start:stop`` of every component, with zeros outside the trace.
 
@@ -236,15 +294,18 @@ def window_cut_statistics(
         Dictionary with, per component c: ``nonzero_cut_before_c`` and
         ``nonzero_cut_after_c`` (recorded samples removed before and after the
         window) and ``missing_in_window_s_c`` (seconds of the window without data);
-        and per record: ``anchor_time_s`` (from the trace start), ``recorded_fraction_kept``
-        and ``energy_fraction_kept`` (share of recorded samples and of the sum of
-        squared amplitudes inside the window).
+        and per record: ``anchor_time_s`` (from the trace start), ``anchor_offset_s`` (from
+        the window start), ``recorded_fraction_kept`` and ``energy_fraction_kept`` (share of
+        recorded samples and of the sum of squared amplitudes inside the window).
     """
     n_samples = traces.shape[-1]
     start, stop = max(bounds.window_start, 0), min(bounds.window_stop, n_samples)
     nonzero = np.abs(traces) > tolerance
     energy = traces**2
-    statistics: dict[str, float] = {"anchor_time_s": bounds.anchor_sample / sampling_rate_hz}
+    statistics: dict[str, float] = {
+        "anchor_time_s": bounds.anchor_sample / sampling_rate_hz,
+        "anchor_offset_s": (bounds.anchor_sample - bounds.window_start) / sampling_rate_hz,
+    }
     window_samples = bounds.window_stop - bounds.window_start
     for position, component in enumerate(CV_COMPONENTS):
         statistics[f"nonzero_cut_before_{component}"] = float(nonzero[position, :start].sum())

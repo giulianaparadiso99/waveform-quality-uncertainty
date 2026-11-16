@@ -35,7 +35,7 @@ import yaml
 from torch import nn
 from torch.utils.data import DataLoader
 
-from wqu.config import TrainingConfig
+from wqu.config import DEFAULT_WINDOW_PLACEMENT, TrainingConfig
 from wqu.models.loss import prior_corrected_probability
 from wqu.training.metrics import classification_metrics, expected_calibration_error
 
@@ -45,6 +45,7 @@ CONFIG_COPY_FILE = "config.yaml"
 CHECKPOINT_FILE = "checkpoint.pt"
 RESUME_SECTIONS: tuple[str, ...] = ("model", "training")
 RESUME_IGNORED_KEYS: tuple[str, ...] = ("resume",)
+WINDOW_PLACEMENT_SETTING = "window_placement"
 VALIDATION_PREDICTIONS_FILE = "validation_predictions.csv"
 LATEST_RUN = "latest"
 RUN_TIME_FORMAT = "%Y%m%d_%H%M%S"
@@ -125,20 +126,44 @@ def latest_unfinished_run(runs_dir: Path, representation: str) -> Path | None:
     return candidates[-1] if candidates else None
 
 
+def _read_yaml(config_path: Path) -> dict:
+    """Parsed content of a YAML configuration file."""
+    with config_path.open("r", encoding="utf-8") as handle:
+        return yaml.safe_load(handle)
+
+
+def _window_placement(raw: dict) -> str:
+    """Window placement of a parsed configuration (the default for files written before the option)."""
+    return str(raw["preprocessing"]["window"].get("placement", DEFAULT_WINDOW_PLACEMENT))
+
+
+def config_window_placement(config_path: Path) -> str:
+    """Window placement of the preprocessing named in a configuration file.
+
+    Args:
+        config_path: YAML configuration file (for example the copy stored in a run folder).
+
+    Returns:
+        Placement name.
+    """
+    return _window_placement(_read_yaml(config_path))
+
+
 def training_settings(config_path: Path) -> dict:
-    """Model and training sections of a configuration file, without the keys irrelevant to resuming.
+    """Settings that must not change when a run is resumed.
 
     Args:
         config_path: YAML configuration file.
 
     Returns:
-        Dictionary with the ``model`` and ``training`` sections.
+        Dictionary with the ``model`` and ``training`` sections (without the keys irrelevant
+        to resuming) and the window placement of the features.
     """
-    with config_path.open("r", encoding="utf-8") as handle:
-        raw = yaml.safe_load(handle)
+    raw = _read_yaml(config_path)
     settings = {section: dict(raw[section]) for section in RESUME_SECTIONS}
     for key in RESUME_IGNORED_KEYS:
         settings["training"].pop(key, None)
+    settings[WINDOW_PLACEMENT_SETTING] = _window_placement(raw)
     return settings
 
 
@@ -155,14 +180,14 @@ def prepare_run_dir(runs_dir: Path, representation: str, config_path: Path, resu
         Tuple (run folder, whether it is resumed).
 
     Raises:
-        ValueError: If the unfinished run was started with different model or training settings.
+        ValueError: If the unfinished run was started with different model, training or window placement settings.
     """
     unfinished = latest_unfinished_run(runs_dir, representation) if resume else None
     if unfinished is None:
         return create_run_dir(runs_dir, representation, config_path), False
     if training_settings(unfinished / CONFIG_COPY_FILE) != training_settings(config_path):
         raise ValueError(
-            f"{unfinished.name} was started with other model or training settings: restore them, "
+            f"{unfinished.name} was started with other model, training or window placement settings: restore them, "
             "or set training.resume to false to start a new run."
         )
     return unfinished, True

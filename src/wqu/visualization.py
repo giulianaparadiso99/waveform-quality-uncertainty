@@ -1169,13 +1169,13 @@ def plot_category_mean_maps(
     categories: Sequence[str],
     frequency_edges_hz: np.ndarray,
     times_s: np.ndarray,
-    pre_anchor_s: float,
+    anchor_s: float | None,
     title: str,
 ) -> Figure:
     """Mean normalized Grad-CAM map of each category, on a common colour scale.
 
     Rows: correctness and uncertainty level; columns: true class (good, bad). The dashed
-    line marks the anchor.
+    line marks the anchor when its position is the same in every window.
 
     Args:
         mean_maps: Mapping from category to mean map, shape (frequencies, times).
@@ -1183,7 +1183,7 @@ def plot_category_mean_maps(
         categories: Categories to draw (missing ones are left blank).
         frequency_edges_hz: Band edges of the grid.
         times_s: Time-bin centres (seconds from the window start).
-        pre_anchor_s: Seconds of the window before the anchor.
+        anchor_s: Seconds from the window start to the anchor, or None to draw no line.
         title: Figure title.
 
     Returns:
@@ -1208,7 +1208,8 @@ def plot_category_mean_maps(
                 continue
             mesh = ax.pcolormesh(time_edges, frequency_edges_hz, mean_maps[name], cmap=CATEGORY_MAP_COLORMAP,
                                  vmin=0.0, vmax=vmax, shading="flat")
-            ax.axvline(pre_anchor_s, color="white", linestyle="--", linewidth=1.0)
+            if anchor_s is not None:
+                ax.axvline(anchor_s, color="white", linestyle="--", linewidth=1.0)
             ax.set_title(f"{name} ({counts.get(name, 0)} records)", loc="left", fontsize=9)
     for ax in axes[-1, :]:
         ax.set_xlabel("time from window start (s)")

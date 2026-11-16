@@ -316,7 +316,7 @@ def padding_attention_ratio(time_profiles: np.ndarray, padding_profiles: np.ndar
 
 
 def map_summary(
-    aggregate: GradCamAggregate, padding_profiles: np.ndarray, times_s: np.ndarray, pre_anchor_s: float
+    aggregate: GradCamAggregate, padding_profiles: np.ndarray, times_s: np.ndarray, anchor_offsets_s: np.ndarray
 ) -> pd.DataFrame:
     """Per-record shares of the map on padding and before the anchor, and map instability.
 
@@ -324,21 +324,24 @@ def map_summary(
         aggregate: Output of ``aggregate_grad_cam``.
         padding_profiles: Output of ``padding_profile`` for every record, shape (records, times).
         times_s: Time-bin centres of the grid.
-        pre_anchor_s: Seconds of the window before the anchor.
+        anchor_offsets_s: Seconds from the window start to the anchor of each record
+            (``wqu.preprocessing.pipeline.anchor_offsets``).
 
     Returns:
         Table with ``padding_share``, ``window_padding_share`` (share of the window that
         is padding, for reference), ``padding_attention_ratio`` (their ratio, only for
         windows with padding: 1 = the map is as concentrated on the padding as a uniform
-        map, above 1 = more), ``pre_anchor_share`` and ``instability``.
+        map, above 1 = more), ``pre_anchor_share``, ``uniform_pre_anchor_share`` (the same
+        share for a uniform map, which depends on the anchor position) and ``instability``.
     """
-    before_anchor = times_s < pre_anchor_s
+    before_anchor = times_s[None, :] < np.asarray(anchor_offsets_s, dtype=float)[:, None]
     return pd.DataFrame(
         {
             "padding_share": (aggregate.time_profiles * padding_profiles).sum(axis=1),
             "window_padding_share": padding_profiles.mean(axis=1),
             "padding_attention_ratio": padding_attention_ratio(aggregate.time_profiles, padding_profiles),
-            "pre_anchor_share": aggregate.time_profiles[:, before_anchor].sum(axis=1),
+            "pre_anchor_share": (aggregate.time_profiles * before_anchor).sum(axis=1),
+            "uniform_pre_anchor_share": before_anchor.mean(axis=1),
             "instability": aggregate.instability,
         }
     )

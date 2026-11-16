@@ -187,6 +187,12 @@ preprocessing:
     # notebook 02). Others: pga, arias, theoretical, hybrid. Records where the method finds no anchor
     # fall back to the PGA.
     anchor: envelope
+    # Placement of the window: anchored = always from pre_anchor_s before to post_anchor_s after the
+    # anchor, with zeros where the window leaves the recording (run of 11 November); clamped = the same
+    # window shifted as little as possible to lie inside the data recorded by all three components,
+    # keeping half an STFT window of data beyond each end when possible (records shorter than the
+    # window keep the zeros). The features of each placement are stored in a separate file.
+    placement: anchored
     pre_anchor_s: 30.0
     post_anchor_s: 90.0
     # Extra data on each side used by the transforms and discarded afterwards (edge effects).

@@ -46,6 +46,22 @@ class TrialSettings:
     training: TrainingConfig
 
 
+def placement_search(search: SearchConfig, window_placement: str) -> SearchConfig:
+    """Search configuration whose study is specific to a window placement.
+
+    The study name gets the placement as suffix, so searches on features with different
+    window placements are stored in separate databases and folders.
+
+    Args:
+        search: Search configuration.
+        window_placement: Window placement of the features (``preprocessing.window_placement``).
+
+    Returns:
+        Copy of ``search`` with study name ``<study_name>_<window_placement>``.
+    """
+    return replace(search, study_name=f"{search.study_name}_{window_placement}")
+
+
 def study_dir(search: SearchConfig) -> Path:
     """Folder of the study (database and trial folders).
 

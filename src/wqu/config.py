@@ -19,6 +19,12 @@ VALID_DATA_SOURCES: tuple[str, ...] = ("seisbench", "local_csv")
 VALID_WAVEFORM_SOURCES: tuple[str, ...] = ("dev_subset", "seisbench")
 VALID_ENERGY_CRITERIA: tuple[str, ...] = ("quantile", "share_above")
 VALID_ANCHOR_METHODS: tuple[str, ...] = ("pga", "envelope", "arias", "theoretical", "hybrid")
+# anchored: fixed position of the anchor in the window (zeros where the window leaves the recording);
+# clamped: the window is shifted, as little as possible, to lie inside the recorded data. The
+# default (anchored) is also used when the configuration does not name a placement.
+DEFAULT_WINDOW_PLACEMENT = "anchored"
+CLAMPED_WINDOW_PLACEMENT = "clamped"
+VALID_WINDOW_PLACEMENTS: tuple[str, ...] = (DEFAULT_WINDOW_PLACEMENT, CLAMPED_WINDOW_PLACEMENT)
 VALID_UNCERTAINTY_MEASURES: tuple[str, ...] = (
     "deterministic_entropy",
     "probability_std",
@@ -212,9 +218,13 @@ class AnchoringConfig:
 
 @dataclass(frozen=True)
 class PreprocessingConfig:
-    """Parameters of the waveform-to-image preprocessing."""
+    """Parameters of the waveform-to-image preprocessing.
+
+    ``window_placement`` is one of ``VALID_WINDOW_PLACEMENTS`` (see ``wqu.preprocessing.windowing``).
+    """
 
     anchor_method: str
+    window_placement: str
     pre_anchor_s: float
     post_anchor_s: float
     context_margin_s: float
@@ -890,6 +900,7 @@ def _build_preprocessing_config(section: Mapping[str, Any], project_root: Path) 
     decibel = _require(section, "decibel", context)
     config = PreprocessingConfig(
         anchor_method=str(_require(window, "anchor", f"{context}.window")),
+        window_placement=str(window.get("placement", DEFAULT_WINDOW_PLACEMENT)),
         pre_anchor_s=float(_require(window, "pre_anchor_s", f"{context}.window")),
         post_anchor_s=float(_require(window, "post_anchor_s", f"{context}.window")),
         context_margin_s=float(_require(window, "context_margin_s", f"{context}.window")),
@@ -925,6 +936,8 @@ def _build_preprocessing_config(section: Mapping[str, Any], project_root: Path) 
         problems.append("antialias_corner_hz must be below the target Nyquist frequency")
     if config.anchor_method not in VALID_ANCHOR_METHODS:
         problems.append(f"window.anchor must be one of {VALID_ANCHOR_METHODS}")
+    if config.window_placement not in VALID_WINDOW_PLACEMENTS:
+        problems.append(f"window.placement must be one of {VALID_WINDOW_PLACEMENTS}")
     if config.pre_anchor_s < 0 or config.post_anchor_s <= 0:
         problems.append("window requires pre_anchor_s >= 0 and post_anchor_s > 0")
     if config.context_margin_s < max(config.stft_window_s / 2.0, 2.0 * config.morlet_half_width_s):
