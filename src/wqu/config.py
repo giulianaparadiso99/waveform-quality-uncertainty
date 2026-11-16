@@ -402,6 +402,9 @@ class ExplanationConfig:
         mc_samples: MC dropout passes per Grad-CAM map.
         batch_size: Records per Grad-CAM batch.
         random_seed: Seed of the record draw.
+        padding_boundary_margin_s: Padding within this distance of the recorded data is left out
+            of the "far" padding of the padding checks.
+        padding_group_edges: Upper limits of the groups of records by share of padding.
     """
 
     uncertainty_measure: str
@@ -411,6 +414,8 @@ class ExplanationConfig:
     mc_samples: int
     batch_size: int
     random_seed: int
+    padding_boundary_margin_s: float
+    padding_group_edges: tuple[float, ...]
 
 
 @dataclass(frozen=True)
@@ -1130,8 +1135,15 @@ def _build_explanation_config(section: Mapping[str, Any]) -> ExplanationConfig:
         mc_samples=int(_require(section, "mc_samples", context)),
         batch_size=int(_require(section, "batch_size", context)),
         random_seed=int(_require(section, "random_seed", context)),
+        padding_boundary_margin_s=float(_require(section, "padding_boundary_margin_s", context)),
+        padding_group_edges=tuple(float(value) for value in _require(section, "padding_group_edges", context)),
     )
     problems = []
+    if config.padding_boundary_margin_s < 0:
+        problems.append("padding_boundary_margin_s must be non-negative")
+    edges = config.padding_group_edges
+    if not edges or not all(0.0 < value < 1.0 for value in edges) or any(b <= a for a, b in zip(edges, edges[1:])):
+        problems.append("padding_group_edges must be increasing values in (0, 1)")
     if config.uncertainty_measure not in VALID_UNCERTAINTY_MEASURES:
         problems.append(f"uncertainty_measure must be one of {VALID_UNCERTAINTY_MEASURES}")
     if not 0.0 < config.low_quantile < config.high_quantile < 1.0:

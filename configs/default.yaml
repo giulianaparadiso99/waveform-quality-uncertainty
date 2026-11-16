@@ -377,6 +377,11 @@ explanation:
   mc_samples: 20
   batch_size: 32
   random_seed: 42
+  # Padding checks: padding within this distance of the recorded data is excluded from the "far" padding
+  # (the transforms and the coarse Grad-CAM grid smear the signal boundary over a few seconds).
+  padding_boundary_margin_s: 5.0
+  # Upper limits of the groups of records by share of the window without data (after the group without padding).
+  padding_group_edges: [0.1, 0.3]
 
 # Hyperparameter search (notebook 08) with Optuna: TPE sampler, median pruner, resumable. Each trial uses the
 # training settings above except the searched hyperparameters, and is scored by its best validation loss.

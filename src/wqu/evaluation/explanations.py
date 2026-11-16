@@ -258,11 +258,15 @@ def padding_profile(
     sampling_rate_hz: float,
     times_s: np.ndarray,
     tolerance: float,
+    boundary_margin_s: float = 0.0,
 ) -> np.ndarray:
     """Share of zero-padded samples (mean over components) in each time bin of the window.
 
     A sample is padding when it lies outside the trace or in the leading or trailing
-    zeros of its component.
+    zeros of its component. With a positive ``boundary_margin_s``, only the padding
+    farther than that from the recorded data is counted ("far" padding), so that the
+    attention given to the start or end of the signal, smeared across the boundary by
+    the transforms and the coarse Grad-CAM grid, is not counted as attention to padding.
 
     Args:
         trace: Stored trace, shape (components, samples).
@@ -271,21 +275,44 @@ def padding_profile(
         sampling_rate_hz: Sampling rate of the stored trace.
         times_s: Time-bin centres of the grid (seconds from the window start).
         tolerance: Zero threshold used to find the zero padding.
+        boundary_margin_s: Padding within this distance of the recorded data is not counted.
 
     Returns:
         Array of shape (times,) with values in [0, 1].
     """
     prepared = prepare_trace(trace, tolerance)
     n_samples = trace.shape[-1]
+    margin = int(round(boundary_margin_s * sampling_rate_hz))
     samples = np.arange(window_start, window_stop)
-    recorded = np.stack(
-        [(samples >= leading) & (samples < n_samples - trailing) for leading, trailing in zip(prepared.leading, prepared.trailing)]
+    padded_per_component = np.stack(
+        [
+            (samples < leading - margin) | (samples >= n_samples - trailing + margin)
+            for leading, trailing in zip(prepared.leading, prepared.trailing)
+        ]
     )
-    padded = 1.0 - recorded.mean(axis=0)
+    padded = padded_per_component.mean(axis=0)
     bins = np.clip(np.digitize((samples - window_start) / sampling_rate_hz, time_bin_edges(times_s)) - 1, 0, len(times_s) - 1)
     totals = np.bincount(bins, weights=padded, minlength=len(times_s))
     sizes = np.bincount(bins, minlength=len(times_s))
     return totals / np.maximum(sizes, 1)
+
+
+def padding_attention_ratio(time_profiles: np.ndarray, padding_profiles: np.ndarray) -> np.ndarray:
+    """Share of the map on padding over share of the window that is padding, per record.
+
+    Args:
+        time_profiles: Normalized maps summed over frequencies, shape (records, times).
+        padding_profiles: Padding share per time bin, shape (records, times).
+
+    Returns:
+        Ratio per record (1 = as much as a uniform map); NaN for windows without padding.
+    """
+    attention = (time_profiles * padding_profiles).sum(axis=1)
+    window_share = padding_profiles.mean(axis=1)
+    ratio = np.full(len(attention), np.nan)
+    has_padding = window_share > 0
+    ratio[has_padding] = attention[has_padding] / window_share[has_padding]
+    return ratio
 
 
 def map_summary(
@@ -306,16 +333,11 @@ def map_summary(
         map, above 1 = more), ``pre_anchor_share`` and ``instability``.
     """
     before_anchor = times_s < pre_anchor_s
-    padding_share = (aggregate.time_profiles * padding_profiles).sum(axis=1)
-    window_padding_share = padding_profiles.mean(axis=1)
-    has_padding = window_padding_share > 0
-    ratio = np.full(len(padding_share), np.nan)
-    ratio[has_padding] = padding_share[has_padding] / window_padding_share[has_padding]
     return pd.DataFrame(
         {
-            "padding_share": padding_share,
-            "window_padding_share": window_padding_share,
-            "padding_attention_ratio": ratio,
+            "padding_share": (aggregate.time_profiles * padding_profiles).sum(axis=1),
+            "window_padding_share": padding_profiles.mean(axis=1),
+            "padding_attention_ratio": padding_attention_ratio(aggregate.time_profiles, padding_profiles),
             "pre_anchor_share": aggregate.time_profiles[:, before_anchor].sum(axis=1),
             "instability": aggregate.instability,
         }
