@@ -4,9 +4,10 @@ from __future__ import annotations
 
 import numpy as np
 import pandas as pd
-from sklearn.metrics import balanced_accuracy_score, roc_auc_score
+from sklearn.metrics import average_precision_score, balanced_accuracy_score, confusion_matrix, roc_auc_score
 
 DECISION_THRESHOLD = 0.5
+CLASS_LABELS: tuple[int, int] = (0, 1)
 
 
 def reliability_table(probabilities: np.ndarray, labels: np.ndarray, n_bins: int) -> pd.DataFrame:
@@ -65,3 +66,53 @@ def classification_metrics(probabilities: np.ndarray, labels: np.ndarray, n_bins
         "balanced_accuracy": float(balanced_accuracy_score(labels, probabilities >= DECISION_THRESHOLD)),
         "ece": expected_calibration_error(probabilities, labels, n_bins),
     }
+
+
+def confusion_counts(probabilities: np.ndarray, labels: np.ndarray, threshold: float = DECISION_THRESHOLD) -> np.ndarray:
+    """Confusion matrix with the bad class as positive.
+
+    Args:
+        probabilities: Probabilities of the bad class.
+        labels: Labels (1 = bad).
+        threshold: Records with probability at or above it are predicted bad.
+
+    Returns:
+        2 x 2 integer array: rows true class (good, bad), columns predicted class (good, bad),
+        that is ``[[TN, FP], [FN, TP]]``.
+    """
+    return confusion_matrix(np.asarray(labels).astype(int), (probabilities >= threshold).astype(int), labels=list(CLASS_LABELS))
+
+
+def confusion_summary(counts: np.ndarray) -> dict[str, float]:
+    """Counts and rates of a confusion matrix (bad class positive).
+
+    Args:
+        counts: Output of ``confusion_counts``.
+
+    Returns:
+        Dictionary with ``tp``, ``tn``, ``fp``, ``fn``, ``recall_bad`` (TP / (TP + FN)),
+        ``specificity`` (TN / (TN + FP)) and ``precision_bad`` (TP / (TP + FP); NaN if nothing is predicted bad).
+    """
+    (tn, fp), (fn, tp) = counts
+    return {
+        "tp": int(tp),
+        "tn": int(tn),
+        "fp": int(fp),
+        "fn": int(fn),
+        "recall_bad": tp / (tp + fn) if tp + fn else float("nan"),
+        "specificity": tn / (tn + fp) if tn + fp else float("nan"),
+        "precision_bad": tp / (tp + fp) if tp + fp else float("nan"),
+    }
+
+
+def average_precision(probabilities: np.ndarray, labels: np.ndarray) -> float:
+    """Area under the precision-recall curve of the bad class (its baseline is the share of bad records).
+
+    Args:
+        probabilities: Probabilities of the bad class.
+        labels: Labels (1 = bad).
+
+    Returns:
+        Average precision.
+    """
+    return float(average_precision_score(labels, probabilities))

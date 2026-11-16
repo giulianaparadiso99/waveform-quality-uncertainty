@@ -191,19 +191,27 @@ def random_rejection_curve(
     return pd.concat(curves).groupby("retained_fraction", sort=False).mean().reset_index()
 
 
-def oracle_rejection_curve(labels: np.ndarray, probabilities: np.ndarray, fractions: np.ndarray) -> pd.DataFrame:
+def oracle_rejection_curve(
+    labels: np.ndarray, probabilities: np.ndarray, fractions: np.ndarray, seed: int
+) -> pd.DataFrame:
     """Metrics when the wrong predictions are discarded first (best possible rejection).
+
+    Within the right and within the wrong predictions the order is random, so that the
+    records kept do not depend on the order of the table (e.g. all good records first).
 
     Args:
         labels: Labels (1 = bad).
         probabilities: Probabilities of the bad class.
         fractions: Fractions of records kept.
+        seed: Seed of the random order within the right and the wrong predictions.
 
     Returns:
         Output of ``retained_metrics``.
     """
     errors = prediction_errors(probabilities, labels)
-    return retained_metrics(np.argsort(errors, kind="stable"), labels, predicted_labels(probabilities), fractions)
+    random_order = np.random.default_rng(seed).permutation(len(labels))
+    order = np.lexsort((random_order, errors))
+    return retained_metrics(order, labels, predicted_labels(probabilities), fractions)
 
 
 def error_rate_tables(
@@ -286,7 +294,7 @@ def rejection_curves(
         for measure in measures
     }
     curves[RANDOM_METHOD] = random_rejection_curve(labels, reference, fractions, random_repeats, seed)
-    curves[ORACLE_METHOD] = oracle_rejection_curve(labels, reference, fractions)
+    curves[ORACLE_METHOD] = oracle_rejection_curve(labels, reference, fractions, seed)
     return pd.concat([curve.assign(method=method) for method, curve in curves.items()], ignore_index=True)
 
 

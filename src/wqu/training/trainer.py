@@ -3,7 +3,13 @@
 At every epoch the history records the training loss and metrics (from the
 outputs computed while training, with dropout active), the validation loss and
 metrics (evaluation mode, dropout off), the learning rate and the duration. The
-model with the lowest validation loss is saved and restored at the end.
+model with the lowest validation loss is saved and restored at the end; a new
+minimum counts only if it improves on the previous one by ``early_stopping_min_delta``.
+
+Resuming: at the end of every epoch a checkpoint stores the model, the optimizer,
+the learning-rate scheduler, the early-stopping state, the history and the state of
+the random generators (Python, NumPy, PyTorch, the device and the batch order), so a
+run that is interrupted and resumed gives the same result as an uninterrupted one.
 
 Probabilities: the network is trained with the bad class weighted by ``w``, so its
 raw probabilities refer to balanced classes. The balanced accuracy uses them with
@@ -17,6 +23,7 @@ from __future__ import annotations
 import random
 import shutil
 import time
+from collections.abc import Callable
 from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
@@ -24,6 +31,7 @@ from pathlib import Path
 import numpy as np
 import pandas as pd
 import torch
+import yaml
 from torch import nn
 from torch.utils.data import DataLoader
 
@@ -34,6 +42,9 @@ from wqu.training.metrics import classification_metrics, expected_calibration_er
 BEST_MODEL_FILE = "best_model.pt"
 HISTORY_FILE = "history.csv"
 CONFIG_COPY_FILE = "config.yaml"
+CHECKPOINT_FILE = "checkpoint.pt"
+RESUME_SECTIONS: tuple[str, ...] = ("model", "training")
+RESUME_IGNORED_KEYS: tuple[str, ...] = ("resume",)
 VALIDATION_PREDICTIONS_FILE = "validation_predictions.csv"
 LATEST_RUN = "latest"
 RUN_TIME_FORMAT = "%Y%m%d_%H%M%S"
@@ -94,6 +105,67 @@ def create_run_dir(runs_dir: Path, representation: str, config_path: Path) -> Pa
     run_dir.mkdir(parents=True, exist_ok=False)
     shutil.copyfile(config_path, run_dir / CONFIG_COPY_FILE)
     return run_dir
+
+
+def latest_unfinished_run(runs_dir: Path, representation: str) -> Path | None:
+    """Most recent run of a representation with a checkpoint but no validation predictions.
+
+    Args:
+        runs_dir: Parent folder of all runs.
+        representation: Input representation.
+
+    Returns:
+        Path of the run, or None if every run is complete.
+    """
+    candidates = sorted(
+        path
+        for path in runs_dir.glob(f"{representation}_*")
+        if (path / CHECKPOINT_FILE).is_file() and not (path / VALIDATION_PREDICTIONS_FILE).is_file()
+    )
+    return candidates[-1] if candidates else None
+
+
+def training_settings(config_path: Path) -> dict:
+    """Model and training sections of a configuration file, without the keys irrelevant to resuming.
+
+    Args:
+        config_path: YAML configuration file.
+
+    Returns:
+        Dictionary with the ``model`` and ``training`` sections.
+    """
+    with config_path.open("r", encoding="utf-8") as handle:
+        raw = yaml.safe_load(handle)
+    settings = {section: dict(raw[section]) for section in RESUME_SECTIONS}
+    for key in RESUME_IGNORED_KEYS:
+        settings["training"].pop(key, None)
+    return settings
+
+
+def prepare_run_dir(runs_dir: Path, representation: str, config_path: Path, resume: bool) -> tuple[Path, bool]:
+    """Folder of the run: the most recent unfinished one when resuming, otherwise a new one.
+
+    Args:
+        runs_dir: Parent folder of all runs.
+        representation: Input representation.
+        config_path: Configuration file of the run.
+        resume: Whether to resume an unfinished run.
+
+    Returns:
+        Tuple (run folder, whether it is resumed).
+
+    Raises:
+        ValueError: If the unfinished run was started with different model or training settings.
+    """
+    unfinished = latest_unfinished_run(runs_dir, representation) if resume else None
+    if unfinished is None:
+        return create_run_dir(runs_dir, representation, config_path), False
+    if training_settings(unfinished / CONFIG_COPY_FILE) != training_settings(config_path):
+        raise ValueError(
+            f"{unfinished.name} was started with other model or training settings: restore them, "
+            "or set training.resume to false to start a new run."
+        )
+    return unfinished, True
 
 
 def find_run_dir(runs_dir: Path, representation: str, run: str) -> Path:
@@ -208,6 +280,72 @@ def epoch_metrics(logits: np.ndarray, labels: np.ndarray, bad_weight: float, n_b
     return metrics
 
 
+def random_states(loader: DataLoader, device: str) -> dict:
+    """State of every random generator used in training.
+
+    Args:
+        loader: Training loader (its generator sets the batch order).
+        device: Device name.
+
+    Returns:
+        Dictionary of generator states.
+    """
+    states = {
+        "python": random.getstate(),
+        "numpy": np.random.get_state(),
+        "torch": torch.get_rng_state(),
+        "loader": loader.generator.get_state() if loader.generator is not None else None,
+    }
+    if device == "mps":
+        states["device"] = torch.mps.get_rng_state()
+    elif device == "cuda":
+        states["device"] = torch.cuda.get_rng_state()
+    return states
+
+
+def restore_random_states(states: dict, loader: DataLoader, device: str) -> None:
+    """Restore the generator states saved by ``random_states``.
+
+    Args:
+        states: Output of ``random_states``.
+        loader: Training loader.
+        device: Device name (must be the one of the saved states).
+    """
+    random.setstate(states["python"])
+    np.random.set_state(states["numpy"])
+    torch.set_rng_state(states["torch"])
+    if states["loader"] is not None and loader.generator is not None:
+        loader.generator.set_state(states["loader"])
+    if device == "mps" and "device" in states:
+        torch.mps.set_rng_state(states["device"])
+    elif device == "cuda" and "device" in states:
+        torch.cuda.set_rng_state(states["device"])
+
+
+def save_checkpoint(path: Path, state: dict) -> None:
+    """Write a checkpoint atomically (temporary file, then rename).
+
+    Args:
+        path: Checkpoint file.
+        state: Objects to store.
+    """
+    temporary = path.with_suffix(".tmp")
+    torch.save(state, temporary)
+    temporary.replace(path)
+
+
+def load_checkpoint(path: Path) -> dict:
+    """Read a checkpoint written by ``save_checkpoint`` (a trusted file of this project).
+
+    Args:
+        path: Checkpoint file.
+
+    Returns:
+        Stored objects.
+    """
+    return torch.load(path, map_location="cpu", weights_only=False)
+
+
 def fit(
     model: nn.Module,
     train_loader: DataLoader,
@@ -217,22 +355,28 @@ def fit(
     bad_weight: float,
     run_dir: Path,
     device: str,
+    epoch_callback: Callable[[int, float], None] | None = None,
 ) -> FitResult:
-    """Train with Adam, learning-rate reduction on plateau and early stopping on the validation loss.
+    """Train with Adam, learning-rate reduction on plateau and early stopping on the validation loss; resumable.
 
-    The history is written to ``run_dir/history.csv`` after every epoch, so it can be
-    inspected while training; the best weights are written to ``run_dir/best_model.pt``
-    and loaded into ``model`` at the end.
+    The history is written to ``run_dir/history.csv`` and a checkpoint to
+    ``run_dir/checkpoint.pt`` after every epoch; the best weights are written to
+    ``run_dir/best_model.pt`` and loaded into ``model`` at the end. If ``run_dir``
+    already holds a checkpoint, training continues from the epoch after it (or returns
+    at once if that run was finished).
 
     Args:
         model: Network.
-        train_loader: Training loader (shuffled).
+        train_loader: Training loader (shuffled, with its own generator).
         validation_loader: Validation loader.
         loss: Weighted loss module.
         training: Training configuration.
         bad_weight: Weight of the bad class used in the loss.
         run_dir: Output folder of the run.
         device: Device name.
+        epoch_callback: Called as ``epoch_callback(epoch, validation_loss)`` after every epoch,
+            also for the epochs restored from a checkpoint (e.g. to report to a pruner, which
+            may stop the run by raising an exception).
 
     Returns:
         FitResult.
@@ -245,9 +389,23 @@ def fit(
         optimizer, mode="min", factor=training.lr_factor, patience=training.lr_patience
     )
     best_model_path = run_dir / BEST_MODEL_FILE
-    best_loss, best_epoch, epochs_without_improvement = float("inf"), 0, 0
-    rows = []
-    for epoch in range(1, training.max_epochs + 1):
+    checkpoint_path = run_dir / CHECKPOINT_FILE
+    state = {"best_loss": float("inf"), "best_epoch": 0, "epochs_without_improvement": 0, "rows": [], "finished": False}
+    if checkpoint_path.is_file():
+        checkpoint = load_checkpoint(checkpoint_path)
+        model.load_state_dict(checkpoint["model"])
+        optimizer.load_state_dict(checkpoint["optimizer"])
+        scheduler.load_state_dict(checkpoint["scheduler"])
+        restore_random_states(checkpoint["random_states"], train_loader, device)
+        state = checkpoint["state"]
+        print(f"Resumed after epoch {len(state['rows'])} of {run_dir.name}")
+    if epoch_callback is not None:
+        for row in state["rows"]:
+            epoch_callback(row["epoch"], row["validation_loss"])
+    first_epoch = len(state["rows"]) + 1
+    for epoch in range(first_epoch, training.max_epochs + 1):
+        if state["finished"]:
+            break
         start = time.perf_counter()
         learning_rate = optimizer.param_groups[0]["lr"]
         train_loss, train_logits, train_labels = train_one_epoch(model, train_loader, loss, optimizer, device)
@@ -255,7 +413,7 @@ def fit(
         scheduler.step(validation_loss)
         train_metrics = epoch_metrics(train_logits, train_labels, bad_weight, training.calibration_bins)
         validation_metrics = epoch_metrics(validation_logits, validation_labels, bad_weight, training.calibration_bins)
-        rows.append(
+        state["rows"].append(
             {
                 "epoch": epoch,
                 "learning_rate": learning_rate,
@@ -266,24 +424,37 @@ def fit(
                 "seconds": time.perf_counter() - start,
             }
         )
-        pd.DataFrame(rows).to_csv(run_dir / HISTORY_FILE, index=False)
-        improved = validation_loss < best_loss
+        pd.DataFrame(state["rows"]).to_csv(run_dir / HISTORY_FILE, index=False)
+        improved = validation_loss < state["best_loss"] - training.early_stopping_min_delta
         if improved:
-            best_loss, best_epoch, epochs_without_improvement = validation_loss, epoch, 0
+            state.update(best_loss=validation_loss, best_epoch=epoch, epochs_without_improvement=0)
             torch.save(model.state_dict(), best_model_path)
         else:
-            epochs_without_improvement += 1
+            state["epochs_without_improvement"] += 1
+        state["finished"] = (
+            state["epochs_without_improvement"] >= training.early_stopping_patience or epoch == training.max_epochs
+        )
+        save_checkpoint(
+            checkpoint_path,
+            {
+                "model": model.state_dict(),
+                "optimizer": optimizer.state_dict(),
+                "scheduler": scheduler.state_dict(),
+                "random_states": random_states(train_loader, device),
+                "state": state,
+            },
+        )
         print(
             f"epoch {epoch:3d}  train loss {train_loss:.4f}  validation loss {validation_loss:.4f}  "
             f"validation AUC {validation_metrics['auc']:.4f}  lr {learning_rate:.1e}  "
-            f"{rows[-1]['seconds']:.0f} s{'  (best)' if improved else ''}"
+            f"{state['rows'][-1]['seconds']:.0f} s{'  (best)' if improved else ''}"
         )
-        if epochs_without_improvement >= training.early_stopping_patience:
-            break
+        if epoch_callback is not None:
+            epoch_callback(epoch, validation_loss)
     model.load_state_dict(torch.load(best_model_path, map_location=device))
     return FitResult(
-        history=pd.DataFrame(rows),
-        best_epoch=best_epoch,
+        history=pd.DataFrame(state["rows"]),
+        best_epoch=state["best_epoch"],
         best_model_path=best_model_path,
-        stopped_early=epochs_without_improvement >= training.early_stopping_patience,
+        stopped_early=state["epochs_without_improvement"] >= training.early_stopping_patience,
     )

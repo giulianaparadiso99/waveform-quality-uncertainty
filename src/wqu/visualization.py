@@ -1276,3 +1276,52 @@ def plot_category_distributions(values: pd.Series, categories: pd.Series, order:
     ax.set_xticks(range(1, len(present) + 1), present, rotation=45, ha="right", fontsize=8)
     ax.set_ylabel(label)
     return ax
+
+
+CONFUSION_COLORMAP = "Blues"
+CONFUSION_CLASS_NAMES: tuple[str, str] = ("good", "bad")
+
+
+def plot_confusion_matrix(counts: np.ndarray, title: str, ax: Axes) -> Axes:
+    """Confusion matrix coloured by the share of each true class, with counts and shares written in the cells.
+
+    Args:
+        counts: 2 x 2 array, rows true class (good, bad), columns predicted class (good, bad).
+        title: Panel title.
+        ax: Axes to draw on.
+
+    Returns:
+        The Axes.
+    """
+    shares = counts / np.maximum(counts.sum(axis=1, keepdims=True), 1)
+    ax.imshow(shares, cmap=CONFUSION_COLORMAP, vmin=0.0, vmax=1.0)
+    for row in range(2):
+        for column in range(2):
+            color = "white" if shares[row, column] > 0.5 else WINDOW_TRACE_COLOR
+            ax.text(column, row, f"{counts[row, column]:,}\n{shares[row, column]:.1%}", ha="center", va="center",
+                    color=color, fontsize=11)
+    ax.set_xticks([0, 1], CONFUSION_CLASS_NAMES)
+    ax.set_yticks([0, 1], CONFUSION_CLASS_NAMES)
+    ax.set_xlabel("predicted class")
+    ax.set_ylabel("true class")
+    ax.grid(visible=False)
+    ax.set_title(title, loc="left", fontsize=10)
+    return ax
+
+
+def plot_confusion_matrices(matrices: Mapping[str, np.ndarray], title: str) -> Figure:
+    """Confusion matrices side by side (e.g. deterministic pass and MC dropout mean).
+
+    Args:
+        matrices: Mapping from panel title to 2 x 2 counts.
+        title: Figure title.
+
+    Returns:
+        The Figure.
+    """
+    figure, axes = plt.subplots(1, len(matrices), figsize=(4.6 * len(matrices), 4.4), constrained_layout=True,
+                                squeeze=False)
+    for ax, (name, counts) in zip(axes[0], matrices.items()):
+        plot_confusion_matrix(counts, name, ax)
+    figure.suptitle(title, x=0.01, ha="left")
+    return figure

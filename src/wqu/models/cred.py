@@ -7,7 +7,8 @@ code (https://github.com/smousavi05/CRED). Differences from CRED:
   averaged over time before a dense head;
 - the final unidirectional LSTM (meant for real-time detection) is removed;
 - dropout after every convolutional stage (channel dropout), every LSTM layer and
-  in the head, so that MC dropout samples the whole network;
+  in the head, so that MC dropout samples the whole network; optionally also between
+  the two convolutions of each residual block (as in wide residual networks);
 - the output is a logit (no sigmoid), to be used with ``BCEWithLogitsLoss``;
 - L1 regularization of the dense layers is replaced by the optimizer weight decay.
 
@@ -25,23 +26,31 @@ from wqu.config import ModelConfig
 
 
 class ResidualBlock(nn.Module):
-    """Two pre-activated convolutions (BN, ReLU, convolution) with an identity shortcut."""
+    """Two pre-activated convolutions (BN, ReLU, convolution) with an identity shortcut.
 
-    def __init__(self, channels: int, kernel_size: int) -> None:
+    With a positive ``dropout``, channel dropout is applied before the second
+    convolution (wide residual networks, Zagoruyko and Komodakis, 2016); with zero
+    the block has no dropout layer at all, as in CRED.
+    """
+
+    def __init__(self, channels: int, kernel_size: int, dropout: float = 0.0) -> None:
         """Create the block.
 
         Args:
             channels: Input and output channels.
             kernel_size: Odd kernel size of both convolutions.
+            dropout: Channel dropout rate between the two convolutions.
         """
         super().__init__()
         padding = kernel_size // 2
+        inner_dropout = [nn.Dropout2d(dropout)] if dropout > 0 else []
         self.layers = nn.Sequential(
             nn.BatchNorm2d(channels),
             nn.ReLU(),
             nn.Conv2d(channels, channels, kernel_size, padding=padding),
             nn.BatchNorm2d(channels),
             nn.ReLU(),
+            *inner_dropout,
             nn.Conv2d(channels, channels, kernel_size, padding=padding),
         )
 
@@ -53,21 +62,24 @@ class ResidualBlock(nn.Module):
 class ConvStage(nn.Module):
     """Strided convolution (halves both axes), residual block and channel dropout."""
 
-    def __init__(self, in_channels: int, out_channels: int, kernel_size: int, dropout: float) -> None:
+    def __init__(
+        self, in_channels: int, out_channels: int, kernel_size: int, dropout: float, residual_dropout: float = 0.0
+    ) -> None:
         """Create the stage.
 
         Args:
             in_channels: Input channels.
             out_channels: Output channels.
             kernel_size: Odd kernel size of the strided convolution; the residual block uses ``kernel_size - 2``.
-            dropout: Channel dropout rate.
+            dropout: Channel dropout rate after the stage.
+            residual_dropout: Channel dropout rate inside the residual block.
         """
         super().__init__()
         self.strided = nn.Sequential(
             nn.Conv2d(in_channels, out_channels, kernel_size, stride=2, padding=kernel_size // 2),
             nn.ReLU(),
         )
-        self.residual = ResidualBlock(out_channels, kernel_size - 2)
+        self.residual = ResidualBlock(out_channels, kernel_size - 2, residual_dropout)
         self.dropout = nn.Dropout2d(dropout)
 
     def forward(self, inputs: torch.Tensor) -> torch.Tensor:
@@ -117,7 +129,7 @@ class CredClassifier(nn.Module):
         channels = (n_components, *config.conv_filters)
         self.conv = nn.Sequential(
             *(
-                ConvStage(channels[stage], channels[stage + 1], kernel, config.conv_dropout)
+                ConvStage(channels[stage], channels[stage + 1], kernel, config.conv_dropout, config.residual_dropout)
                 for stage, kernel in enumerate(config.conv_kernels)
             )
         )

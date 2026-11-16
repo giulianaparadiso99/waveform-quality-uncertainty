@@ -13,3 +13,4 @@ requests
 tqdm
 torch
 captum
+optuna>=5.1

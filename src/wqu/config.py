@@ -293,6 +293,8 @@ class ModelConfig:
         conv_dropout: Channel dropout rate after each convolutional stage.
         recurrent_dropout: Dropout rate after each LSTM layer.
         head_dropout: Dropout rate in the classification head.
+        residual_dropout: Channel dropout rate between the two convolutions of each residual block
+            (0 = none, as in CRED).
         mc_samples: Stochastic forward passes used for MC dropout predictions.
         grad_cam_mc_samples: Stochastic passes used for each Grad-CAM map.
         grad_cam_records_per_class: Records per class shown in the Grad-CAM check.
@@ -308,6 +310,7 @@ class ModelConfig:
     conv_dropout: float
     recurrent_dropout: float
     head_dropout: float
+    residual_dropout: float
     mc_samples: int
     grad_cam_mc_samples: int
     grad_cam_records_per_class: int
@@ -329,6 +332,9 @@ class TrainingConfig:
         lr_factor: Factor applied to the learning rate when the validation loss stalls.
         lr_patience: Epochs without improvement before reducing the learning rate.
         early_stopping_patience: Epochs without improvement before stopping.
+        early_stopping_min_delta: Smallest decrease of the validation loss counted as an improvement
+            (for early stopping and for saving the best model).
+        resume: Resume the most recent unfinished run of the representation, if there is one.
         num_workers: Data-loading worker processes (0 = main process).
         device: ``auto`` (Apple GPU, then CUDA, then CPU), ``cpu``, ``mps`` or ``cuda``.
         random_seed: Seed of weights, batch order and dropout.
@@ -345,6 +351,8 @@ class TrainingConfig:
     lr_factor: float
     lr_patience: int
     early_stopping_patience: int
+    early_stopping_min_delta: float
+    resume: bool
     num_workers: int
     device: str
     random_seed: int
@@ -406,6 +414,55 @@ class ExplanationConfig:
 
 
 @dataclass(frozen=True)
+class SearchConfig:
+    """Hyperparameter search with Optuna (TPE sampler, median pruner), resumable.
+
+    Every trial trains a model with the ``training`` settings, except the searched
+    hyperparameters, and is scored by its best validation loss. Trials are pruned when
+    their validation loss is worse than the median of earlier trials at the same epoch.
+
+    Attributes:
+        study_name: Name of the study (also the name of its folder and database).
+        n_trials: Trials to finish (completed or pruned), counting those of earlier sessions.
+        enqueue_baseline: Run first, as a reference, the configuration of the ``model`` and
+            ``training`` sections (it must lie in the search space).
+        learning_rate_range: Bounds of the initial learning rate (sampled on a log scale).
+        conv_dropout_choices: Candidate channel dropout rates after the convolutional stages.
+        recurrent_dropout_range: Bounds of the dropout rate after the LSTM layers.
+        head_dropout_range: Bounds of the dropout rate in the head.
+        residual_dropout_options: Whether dropout is also used inside the residual blocks
+            (at the convolutional rate).
+        conv_filters_choices: Candidate filters of the convolutional stages.
+        recurrent_units_choices: Candidate hidden units of the LSTM layers.
+        pruner_startup_trials: Trials completed before pruning starts.
+        pruner_warmup_epochs: Epochs of every trial before it can be pruned.
+        sampler_seed: Seed of the TPE sampler.
+        heartbeat_interval_s: Interval of the trial heartbeat, used to detect interrupted trials.
+        grace_period_s: Time without heartbeat after which a running trial counts as interrupted.
+        max_retries: Times an interrupted trial is resumed.
+        search_dir: Folder of the studies.
+    """
+
+    study_name: str
+    n_trials: int
+    enqueue_baseline: bool
+    learning_rate_range: tuple[float, float]
+    conv_dropout_choices: tuple[float, ...]
+    recurrent_dropout_range: tuple[float, float]
+    head_dropout_range: tuple[float, float]
+    residual_dropout_options: tuple[bool, ...]
+    conv_filters_choices: tuple[tuple[int, ...], ...]
+    recurrent_units_choices: tuple[int, ...]
+    pruner_startup_trials: int
+    pruner_warmup_epochs: int
+    sampler_seed: int
+    heartbeat_interval_s: int
+    grace_period_s: int
+    max_retries: int
+    search_dir: Path
+
+
+@dataclass(frozen=True)
 class OutputConfig:
     """Output directories for figures and tables."""
 
@@ -427,6 +484,7 @@ class ProjectConfig:
     training: TrainingConfig
     evaluation: EvaluationConfig
     explanation: ExplanationConfig
+    search: SearchConfig
     output: OutputConfig
 
 
@@ -939,6 +997,7 @@ def _build_model_config(section: Mapping[str, Any], project_root: Path) -> Model
         conv_dropout=float(_require(dropout, "conv", f"{context}.dropout")),
         recurrent_dropout=float(_require(dropout, "recurrent", f"{context}.dropout")),
         head_dropout=float(_require(dropout, "head", f"{context}.dropout")),
+        residual_dropout=float(_require(dropout, "residual", f"{context}.dropout")),
         mc_samples=int(_require(section, "mc_samples", context)),
         grad_cam_mc_samples=int(_require(grad_cam, "mc_samples", f"{context}.grad_cam")),
         grad_cam_records_per_class=int(_require(grad_cam, "records_per_class", f"{context}.grad_cam")),
@@ -954,7 +1013,8 @@ def _build_model_config(section: Mapping[str, Any], project_root: Path) -> Model
         problems.append("filters and units must be positive")
     if config.recurrent_layers < 1:
         problems.append("recurrent_layers must be at least 1")
-    if not all(0.0 <= rate < 1.0 for rate in (config.conv_dropout, config.recurrent_dropout, config.head_dropout)):
+    rates = (config.conv_dropout, config.recurrent_dropout, config.head_dropout, config.residual_dropout)
+    if not all(0.0 <= rate < 1.0 for rate in rates):
         problems.append("dropout rates must be in [0, 1)")
     if config.mc_samples < 1 or config.grad_cam_mc_samples < 2:
         problems.append("mc_samples must be at least 1 and grad_cam.mc_samples at least 2")
@@ -986,6 +1046,8 @@ def _build_training_config(section: Mapping[str, Any], project_root: Path) -> Tr
         lr_factor=float(_require(section, "lr_factor", context)),
         lr_patience=int(_require(section, "lr_patience", context)),
         early_stopping_patience=int(_require(section, "early_stopping_patience", context)),
+        early_stopping_min_delta=float(_require(section, "early_stopping_min_delta", context)),
+        resume=bool(_require(section, "resume", context)),
         num_workers=int(_require(section, "num_workers", context)),
         device=str(_require(section, "device", context)),
         random_seed=int(_require(section, "random_seed", context)),
@@ -1005,6 +1067,8 @@ def _build_training_config(section: Mapping[str, Any], project_root: Path) -> Tr
         problems.append("learning_rate must be positive, weight_decay non-negative, lr_factor in (0, 1)")
     if min(config.lr_patience, config.early_stopping_patience, config.num_workers) < 0:
         problems.append("patiences and num_workers must be non-negative")
+    if config.early_stopping_min_delta < 0:
+        problems.append("early_stopping_min_delta must be non-negative")
     if problems:
         raise ValueError("Invalid training configuration: " + "; ".join(problems) + ".")
     return config
@@ -1079,6 +1143,68 @@ def _build_explanation_config(section: Mapping[str, Any]) -> ExplanationConfig:
     return config
 
 
+def _as_range(value: Any, name: str) -> tuple[float, float]:
+    """Read a two-element increasing numeric range."""
+    values = tuple(float(item) for item in value)
+    if len(values) != 2 or not values[0] < values[1]:
+        raise ValueError(f"'{name}' must be a list [low, high] with low < high.")
+    return values
+
+
+def _build_search_config(section: Mapping[str, Any], project_root: Path) -> SearchConfig:
+    """Build and validate the ``search`` section.
+
+    Args:
+        section: Parsed ``search`` mapping.
+        project_root: Base directory for relative paths.
+
+    Returns:
+        Validated SearchConfig.
+    """
+    context = "search"
+    space = _require(section, "space", context)
+    pruner = _require(section, "pruner", context)
+    config = SearchConfig(
+        study_name=str(_require(section, "study_name", context)),
+        n_trials=int(_require(section, "n_trials", context)),
+        enqueue_baseline=bool(_require(section, "enqueue_baseline", context)),
+        learning_rate_range=_as_range(_require(space, "learning_rate", f"{context}.space"), "learning_rate"),
+        conv_dropout_choices=tuple(float(value) for value in _require(space, "conv_dropout", f"{context}.space")),
+        recurrent_dropout_range=_as_range(_require(space, "recurrent_dropout", f"{context}.space"), "recurrent_dropout"),
+        head_dropout_range=_as_range(_require(space, "head_dropout", f"{context}.space"), "head_dropout"),
+        residual_dropout_options=tuple(bool(value) for value in _require(space, "residual_dropout", f"{context}.space")),
+        conv_filters_choices=tuple(
+            _as_int_tuple(value, f"{context}.space.conv_filters") for value in _require(space, "conv_filters", f"{context}.space")
+        ),
+        recurrent_units_choices=tuple(int(value) for value in _require(space, "recurrent_units", f"{context}.space")),
+        pruner_startup_trials=int(_require(pruner, "startup_trials", f"{context}.pruner")),
+        pruner_warmup_epochs=int(_require(pruner, "warmup_epochs", f"{context}.pruner")),
+        sampler_seed=int(_require(section, "sampler_seed", context)),
+        heartbeat_interval_s=int(_require(section, "heartbeat_interval_s", context)),
+        grace_period_s=int(_require(section, "grace_period_s", context)),
+        max_retries=int(_require(section, "max_retries", context)),
+        search_dir=_resolve_path(_require(section, "search_dir", context), project_root),
+    )
+    problems = []
+    if config.n_trials < 1 or config.max_retries < 0:
+        problems.append("n_trials must be positive and max_retries non-negative")
+    if config.learning_rate_range[0] <= 0:
+        problems.append("learning_rate bounds must be positive")
+    rates = (*config.conv_dropout_choices, *config.recurrent_dropout_range, *config.head_dropout_range)
+    if not all(0.0 <= rate < 1.0 for rate in rates):
+        problems.append("dropout rates must be in [0, 1)")
+    if not (config.conv_dropout_choices and config.residual_dropout_options and config.conv_filters_choices
+            and config.recurrent_units_choices):
+        problems.append("every list of choices must be non-empty")
+    if min(config.pruner_startup_trials, config.pruner_warmup_epochs) < 0:
+        problems.append("pruner settings must be non-negative")
+    if not 0 < config.heartbeat_interval_s < config.grace_period_s:
+        problems.append("heartbeat_interval_s must be positive and smaller than grace_period_s")
+    if problems:
+        raise ValueError("Invalid search configuration: " + "; ".join(problems) + ".")
+    return config
+
+
 def _build_output_config(section: Mapping[str, Any], project_root: Path) -> OutputConfig:
     """Build the ``output`` section.
 
@@ -1131,6 +1257,7 @@ def load_config(config_path: str | Path, project_root: str | Path | None = None)
         training=_build_training_config(_require(raw, "training", "root"), root),
         evaluation=_build_evaluation_config(_require(raw, "evaluation", "root")),
         explanation=_build_explanation_config(_require(raw, "explanation", "root")),
+        search=_build_search_config(_require(raw, "search", "root"), root),
         output=_build_output_config(_require(raw, "output", "root"), root),
     )
 

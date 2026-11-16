@@ -301,13 +301,21 @@ def map_summary(
 
     Returns:
         Table with ``padding_share``, ``window_padding_share`` (share of the window that
-        is padding, for reference), ``pre_anchor_share`` and ``instability``.
+        is padding, for reference), ``padding_attention_ratio`` (their ratio, only for
+        windows with padding: 1 = the map is as concentrated on the padding as a uniform
+        map, above 1 = more), ``pre_anchor_share`` and ``instability``.
     """
     before_anchor = times_s < pre_anchor_s
+    padding_share = (aggregate.time_profiles * padding_profiles).sum(axis=1)
+    window_padding_share = padding_profiles.mean(axis=1)
+    has_padding = window_padding_share > 0
+    ratio = np.full(len(padding_share), np.nan)
+    ratio[has_padding] = padding_share[has_padding] / window_padding_share[has_padding]
     return pd.DataFrame(
         {
-            "padding_share": (aggregate.time_profiles * padding_profiles).sum(axis=1),
-            "window_padding_share": padding_profiles.mean(axis=1),
+            "padding_share": padding_share,
+            "window_padding_share": window_padding_share,
+            "padding_attention_ratio": ratio,
             "pre_anchor_share": aggregate.time_profiles[:, before_anchor].sum(axis=1),
             "instability": aggregate.instability,
         }
@@ -316,6 +324,9 @@ def map_summary(
 
 def summary_by_category(summary: pd.DataFrame, categories: pd.Series) -> pd.DataFrame:
     """Median of each map quantity per category, with the number of records.
+
+    Medians skip missing values, so ``padding_attention_ratio_median`` refers to the
+    records whose window contains padding (counted in ``records_with_padding``).
 
     Args:
         summary: Output of ``map_summary``.
@@ -327,6 +338,7 @@ def summary_by_category(summary: pd.DataFrame, categories: pd.Series) -> pd.Data
     grouped = summary.groupby(categories.to_numpy())
     table = grouped.median().add_suffix("_median")
     table.insert(0, "records", grouped.size())
+    table.insert(1, "records_with_padding", grouped["padding_attention_ratio"].count())
     return table.reindex([name for name in category_order() if name in table.index])
 
 
@@ -342,3 +354,39 @@ def mean_profiles_by_category(profiles: np.ndarray, categories: pd.Series) -> pd
     """
     table = pd.DataFrame(profiles).groupby(categories.to_numpy()).mean()
     return table.reindex([name for name in category_order() if name in table.index])
+
+
+def confident_errors(categories: pd.DataFrame, records: pd.DataFrame, metadata_columns: list[str]) -> pd.DataFrame:
+    """Wrong predictions with low uncertainty, with their metadata.
+
+    Args:
+        categories: Output of ``assign_categories`` (with the ``record`` column).
+        records: Feature records indexed by record, with the metadata columns.
+        metadata_columns: Metadata columns to attach.
+
+    Returns:
+        Rows of the categories ``wrong-low-*``, sorted by category and uncertainty, with the
+        prediction, the uncertainty and the metadata.
+    """
+    wrong_low = categories[(categories[CORRECTNESS_COLUMN] == "wrong") & (categories[UNCERTAINTY_LEVEL_COLUMN] == "low")]
+    metadata = records.loc[wrong_low["record"].to_numpy(), metadata_columns].reset_index(drop=True)
+    return pd.concat([wrong_low.reset_index(drop=True), metadata], axis=1)
+
+
+def compare_with_all(selected: pd.DataFrame, records: pd.DataFrame, numeric_columns: list[str]) -> pd.DataFrame:
+    """Medians of numeric metadata in a selection of records and in all records, by true class.
+
+    Args:
+        selected: Selected rows (output of ``confident_errors``).
+        records: All records of the set (e.g. the validation records), with the label column
+            renamed or mapped to ``true_class``.
+        numeric_columns: Numeric metadata columns.
+
+    Returns:
+        Table with (true class, group) as rows and the columns as columns.
+    """
+    rows = {}
+    for true_class in CLASS_NAMES:
+        rows[(true_class, "confident errors")] = selected.loc[selected[TRUE_CLASS_COLUMN] == true_class, numeric_columns].median()
+        rows[(true_class, "all records")] = records.loc[records[TRUE_CLASS_COLUMN] == true_class, numeric_columns].median()
+    return pd.DataFrame(rows).T

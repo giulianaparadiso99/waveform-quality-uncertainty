@@ -308,6 +308,8 @@ model:
     conv: 0.1
     recurrent: 0.3
     head: 0.5
+    # Channel dropout between the two convolutions of each residual block (0 = none, as in CRED).
+    residual: 0.0
   # Stochastic forward passes for MC dropout predictions.
   mc_samples: 50
   # Grad-CAM (Captum) on the last convolutional layer, maps for both classes over MC dropout passes.
@@ -332,6 +334,11 @@ training:
   lr_patience: 3
   # Stop after this many epochs without improvement of the validation loss; the best model is kept.
   early_stopping_patience: 10
+  # A new best validation loss must improve on the previous one by at least this much.
+  early_stopping_min_delta: 0.001
+  # true: resume the most recent unfinished run of the representation (checkpoint at every epoch);
+  # the model and training settings must be unchanged.
+  resume: true
   num_workers: 0
   # auto = Apple GPU (mps) if available, then CUDA, then CPU.
   device: auto
@@ -370,6 +377,35 @@ explanation:
   mc_samples: 20
   batch_size: 32
   random_seed: 42
+
+# Hyperparameter search (notebook 08) with Optuna: TPE sampler, median pruner, resumable. Each trial uses the
+# training settings above except the searched hyperparameters, and is scored by its best validation loss.
+search:
+  study_name: spectrogram_search
+  # Trials to finish (completed or pruned), summed over all sessions (including the baseline).
+  n_trials: 21
+  # Run first, as a reference, the configuration of the model and training sections above.
+  enqueue_baseline: true
+  space:
+    learning_rate: [1.0e-4, 1.0e-3]   # log scale
+    conv_dropout: [0.0, 0.1, 0.2]
+    recurrent_dropout: [0.2, 0.5]
+    head_dropout: [0.3, 0.7]
+    # Dropout also inside the residual blocks, at the convolutional rate.
+    residual_dropout: [false, true]
+    conv_filters: [[8, 16], [16, 32]]
+    recurrent_units: [64, 128]
+  pruner:
+    # Trials completed before pruning starts, and epochs of every trial before it can be pruned.
+    startup_trials: 5
+    warmup_epochs: 5
+  sampler_seed: 42
+  # A running trial without heartbeat for grace_period_s counts as interrupted and is resumed
+  # from its checkpoint (at most max_retries times).
+  heartbeat_interval_s: 60
+  grace_period_s: 180
+  max_retries: 3
+  search_dir: runs/search
 
 output:
   figures_dir: outputs/figures/01_exploration
