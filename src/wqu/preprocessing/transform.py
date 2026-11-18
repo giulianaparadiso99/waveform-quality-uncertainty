@@ -14,6 +14,11 @@ analysis window:
   (same wavelet, normalization and frequencies) but is computed in the
   frequency domain with the analytic Fourier transform of the wavelet, which
   is faster and avoids sampling a very short wavelet at high frequencies.
+  Checked in ``tests/test_transforms.py``: the spectrogram frames coincide with
+  ``scipy.signal.spectrogram``; the scalogram coincides with the ObsPy transform
+  once ObsPy's half-sample offset is accounted for (its wavelet is centred half a
+  sample away from the analysed sample), except for small differences close to
+  Nyquist, where ObsPy's sampled wavelet has a folded spectrum.
 
 The transforms are computed on the window extended by a context margin, and
 only the window is kept, so that edge effects fall outside the result.
