@@ -24,6 +24,8 @@ VALID_ANCHOR_METHODS: tuple[str, ...] = ("pga", "envelope", "arias", "theoretica
 # full: no windowing, the window is the whole stored trace (data.waveform_length_s, padding included).
 # The default (anchored) is also used when the configuration does not name a placement.
 DEFAULT_WINDOW_PLACEMENT = "anchored"
+# Network without time masking (the original architecture), also when the configuration does not say.
+DEFAULT_TIME_MASKING = False
 CLAMPED_WINDOW_PLACEMENT = "clamped"
 FULL_WINDOW_PLACEMENT = "full"
 VALID_WINDOW_PLACEMENTS: tuple[str, ...] = (DEFAULT_WINDOW_PLACEMENT, CLAMPED_WINDOW_PLACEMENT, FULL_WINDOW_PLACEMENT)
@@ -312,6 +314,8 @@ class ModelConfig:
         head_dropout: Dropout rate in the classification head.
         residual_dropout: Channel dropout rate between the two convolutions of each residual block
             (0 = none, as in CRED).
+        time_masking: Whether the network ignores the zero-padded time bins (inputs carry the
+            time mask as an extra channel; see ``wqu.models.cred``).
         mc_samples: Stochastic forward passes used for MC dropout predictions.
         grad_cam_mc_samples: Stochastic passes used for each Grad-CAM map.
         grad_cam_records_per_class: Records per class shown in the Grad-CAM check.
@@ -328,6 +332,7 @@ class ModelConfig:
     recurrent_dropout: float
     head_dropout: float
     residual_dropout: float
+    time_masking: bool
     mc_samples: int
     grad_cam_mc_samples: int
     grad_cam_records_per_class: int
@@ -1025,6 +1030,7 @@ def _build_model_config(section: Mapping[str, Any], project_root: Path) -> Model
         recurrent_dropout=float(_require(dropout, "recurrent", f"{context}.dropout")),
         head_dropout=float(_require(dropout, "head", f"{context}.dropout")),
         residual_dropout=float(_require(dropout, "residual", f"{context}.dropout")),
+        time_masking=bool(section.get("time_masking", DEFAULT_TIME_MASKING)),
         mc_samples=int(_require(section, "mc_samples", context)),
         grad_cam_mc_samples=int(_require(grad_cam, "mc_samples", f"{context}.grad_cam")),
         grad_cam_records_per_class=int(_require(grad_cam, "records_per_class", f"{context}.grad_cam")),

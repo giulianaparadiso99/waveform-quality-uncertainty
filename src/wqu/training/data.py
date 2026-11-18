@@ -5,6 +5,10 @@ times). Each frequency is standardized with a mean and a standard deviation comm
 to the three components and to all times, computed on the training records only;
 the stored values stay in decibels, so the normalization can change without
 recomputing the features.
+
+With time masking, each image gets one more channel holding the time mask of the
+record (1 on the time bins with recorded data, 0 on the zero padding), repeated at
+every frequency; the network separates it from the components.
 """
 
 from __future__ import annotations
@@ -104,7 +108,13 @@ class FeatureDataset(Dataset):
     """
 
     def __init__(
-        self, path: Path, representation: str, rows: np.ndarray, labels: np.ndarray, statistics: FrequencyStatistics
+        self,
+        path: Path,
+        representation: str,
+        rows: np.ndarray,
+        labels: np.ndarray,
+        statistics: FrequencyStatistics,
+        time_masks: np.ndarray | None = None,
     ) -> None:
         """Create the dataset.
 
@@ -114,6 +124,9 @@ class FeatureDataset(Dataset):
             rows: Feature indices of the records.
             labels: Labels of the records (0 = good, 1 = bad), aligned with ``rows``.
             statistics: Per-frequency statistics of the training records.
+            time_masks: Time masks of all the records of the file, shape (records in file, times),
+                indexed by feature index (``wqu.preprocessing.time_masks.read_time_masks``); None
+                for images without the mask channel.
         """
         self.path = path
         self.representation = representation
@@ -121,6 +134,7 @@ class FeatureDataset(Dataset):
         self.labels = np.asarray(labels, dtype=np.float32)
         self.mean = statistics.mean[None, :, None]
         self.std = statistics.std[None, :, None]
+        self.time_masks = time_masks
         self._file: h5py.File | None = None
 
     def __len__(self) -> int:
@@ -128,12 +142,19 @@ class FeatureDataset(Dataset):
         return len(self.rows)
 
     def __getitem__(self, position: int) -> tuple[torch.Tensor, torch.Tensor]:
-        """Standardized image of shape (components, frequencies, times) and its label."""
+        """Standardized image of shape (channels, frequencies, times) and its label.
+
+        The channels are the components, followed by the time mask when the dataset has masks.
+        """
         if self._file is None:
             self._file = h5py.File(self.path, mode="r")
-        image = self._file[self.representation][int(self.rows[position])].astype(np.float32)
+        row = int(self.rows[position])
+        image = self._file[self.representation][row].astype(np.float32)
         standardized = (image - self.mean) / self.std
-        return torch.from_numpy(standardized), torch.tensor(self.labels[position])
+        if self.time_masks is not None:
+            mask_channel = np.broadcast_to(self.time_masks[row].astype(np.float32), standardized.shape[1:])
+            standardized = np.concatenate([standardized, mask_channel[None]], axis=0)
+        return torch.from_numpy(np.ascontiguousarray(standardized)), torch.tensor(self.labels[position])
 
 
 def make_loader(dataset: FeatureDataset, batch_size: int, shuffle: bool, num_workers: int, seed: int) -> DataLoader:

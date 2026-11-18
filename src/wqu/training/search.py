@@ -46,20 +46,26 @@ class TrialSettings:
     training: TrainingConfig
 
 
-def placement_search(search: SearchConfig, window_placement: str) -> SearchConfig:
-    """Search configuration whose study is specific to a window placement.
+MASKED_STUDY_SUFFIX = "_masked"
 
-    The study name gets the placement as suffix, so searches on features with different
-    window placements are stored in separate databases and folders.
+
+def placement_search(search: SearchConfig, window_placement: str, time_masking: bool) -> SearchConfig:
+    """Search configuration whose study is specific to a window placement and network variant.
+
+    The study name gets the placement (and ``_masked`` for the time-masked network) as
+    suffix, so searches on different features or networks are stored in separate databases
+    and folders.
 
     Args:
         search: Search configuration.
         window_placement: Window placement of the features (``preprocessing.window_placement``).
+        time_masking: Whether the network uses time masking (``model.time_masking``).
 
     Returns:
-        Copy of ``search`` with study name ``<study_name>_<window_placement>``.
+        Copy of ``search`` with study name ``<study_name>_<window_placement>[_masked]``.
     """
-    return replace(search, study_name=f"{search.study_name}_{window_placement}")
+    suffix = MASKED_STUDY_SUFFIX if time_masking else ""
+    return replace(search, study_name=f"{search.study_name}_{window_placement}{suffix}")
 
 
 def study_dir(search: SearchConfig) -> Path:

@@ -35,7 +35,7 @@ import yaml
 from torch import nn
 from torch.utils.data import DataLoader
 
-from wqu.config import DEFAULT_WINDOW_PLACEMENT, TrainingConfig
+from wqu.config import DEFAULT_TIME_MASKING, DEFAULT_WINDOW_PLACEMENT, TrainingConfig
 from wqu.models.loss import prior_corrected_probability
 from wqu.training.metrics import classification_metrics, expected_calibration_error
 
@@ -147,6 +147,18 @@ def config_window_placement(config_path: Path) -> str:
         Placement name.
     """
     return _window_placement(_read_yaml(config_path))
+
+
+def config_time_masking(config_path: Path) -> bool:
+    """Whether a configuration file uses the time-masked network.
+
+    Args:
+        config_path: YAML configuration file (for example the copy stored in a run folder).
+
+    Returns:
+        ``model.time_masking`` (the default for files written before the option).
+    """
+    return bool(_read_yaml(config_path)["model"].get("time_masking", DEFAULT_TIME_MASKING))
 
 
 def training_settings(config_path: Path) -> dict:

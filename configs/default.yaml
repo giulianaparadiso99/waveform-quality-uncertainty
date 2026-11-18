@@ -318,6 +318,10 @@ model:
     head: 0.5
     # Channel dropout between the two convolutions of each residual block (0 = none, as in CRED).
     residual: 0.0
+  # Ignore the zero-padded time bins (padding common to the three components): the inputs carry the
+  # time mask of notebook 02c as an extra channel, and convolutions, LSTMs and the mean over time use
+  # only the bins with recorded data. false = original architecture.
+  time_masking: true
   # Stochastic forward passes for MC dropout predictions.
   mc_samples: 50
   # Grad-CAM (Captum) on the last convolutional layer, maps for both classes over MC dropout passes.
