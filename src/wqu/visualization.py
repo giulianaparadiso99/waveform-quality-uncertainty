@@ -1326,3 +1326,32 @@ def plot_confusion_matrices(matrices: Mapping[str, np.ndarray], title: str) -> F
         plot_confusion_matrix(counts, name, ax)
     figure.suptitle(title, x=0.01, ha="left")
     return figure
+
+
+def plot_learning_curve(
+    runs: pd.DataFrame, curve_sizes: np.ndarray, curve_losses: np.ndarray, folds: pd.DataFrame, ax: Axes
+) -> Axes:
+    """Best validation loss against training records, with the fitted power law and the sizes of k folds.
+
+    Args:
+        runs: One row per run with ``training_records`` and ``validation_loss``.
+        curve_sizes: Training records at which the fitted curve is drawn.
+        curve_losses: Fitted loss at ``curve_sizes``.
+        folds: Output of ``wqu.training.learning_curve.fold_table`` (vertical lines at the training
+            records of each k).
+        ax: Axes to draw on.
+
+    Returns:
+        The Axes.
+    """
+    ax.plot(curve_sizes, curve_losses, color=NEUTRAL_COLOR, linewidth=LINE_WIDTH, label="power-law fit")
+    ax.scatter(runs["training_records"], runs["validation_loss"], color=TRAINING_SET_COLORS["validation"],
+               zorder=3, label="runs")
+    for n_folds, row in folds.iterrows():
+        ax.axvline(row["training_records"], color=REFERENCE_LINE_COLOR, linestyle=":", linewidth=1.0)
+        ax.annotate(f"k={n_folds}", (row["training_records"], 1.0), xycoords=("data", "axes fraction"),
+                    xytext=(2, -12), textcoords="offset points", fontsize=8)
+    ax.set_xlabel("training records")
+    ax.set_ylabel("best validation loss")
+    ax.legend(fontsize=8)
+    return ax

@@ -424,6 +424,24 @@ search:
   max_retries: 3
   search_dir: runs/search
 
+# Learning curve used to choose the number k of cross-validation folds (notebook 08a): the model and
+# training configuration above is trained on fold 1 with growing shares of its training events; a power
+# law fitted to the best validation losses predicts the loss with the training set of each k
+# ((k - 1) / k of the records; fold 1 has the training set of k = 5). The smallest k whose loss increase,
+# compared with training on all records, is within the tolerance is suggested.
+learning_curve:
+  # Shares of the training set of fold 1 (0.625 and 0.833 = training sets of k = 2 and k = 3).
+  training_shares: [0.4, 0.625, 0.833, 1.0]
+  fold_candidates: [2, 3, 4, 5, 10]
+  subsample_seed: 42
+  # The run on the whole training set is repeated with seed training.random_seed + repeat_seed_offset:
+  # the difference between the two runs measures the variability between runs.
+  repeat_seed_offset: 1
+  # Largest acceptable loss increase due to the smaller training set; null = the difference between
+  # the two runs on the whole training set.
+  loss_tolerance: null
+  output_dir: runs/learning_curve
+
 output:
   figures_dir: outputs/figures/01_exploration
   tables_dir: outputs/tables/01_exploration

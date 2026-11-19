@@ -498,6 +498,35 @@ class OutputConfig:
 
 
 @dataclass(frozen=True)
+class LearningCurveConfig:
+    """Learning curve used to choose the number of cross-validation folds.
+
+    The configuration of the ``model`` and ``training`` sections is trained on fold 1 of the
+    split, with growing shares of its training events; a power law fitted to the best
+    validation losses gives the loss expected with the training set of each candidate
+    number of folds. The training run on the whole training set is repeated with another
+    seed, to measure the variability between runs.
+
+    Attributes:
+        training_shares: Shares of the training records used (1.0 = the whole training set of
+            fold 1, which is the training set of 5-fold cross-validation).
+        fold_candidates: Numbers of folds compared.
+        subsample_seed: Seed of the random choice of the training events.
+        repeat_seed_offset: Added to ``training.random_seed`` for the repeated run.
+        loss_tolerance: Largest acceptable loss increase due to the smaller training set of
+            k folds; None = the difference between the two runs on the whole training set.
+        output_dir: Folder of the runs (one subfolder per study variant).
+    """
+
+    training_shares: tuple[float, ...]
+    fold_candidates: tuple[int, ...]
+    subsample_seed: int
+    repeat_seed_offset: int
+    loss_tolerance: float | None
+    output_dir: Path
+
+
+@dataclass(frozen=True)
 class ProjectConfig:
     """Complete, validated project configuration."""
 
@@ -512,6 +541,7 @@ class ProjectConfig:
     evaluation: EvaluationConfig
     explanation: ExplanationConfig
     search: SearchConfig
+    learning_curve: LearningCurveConfig
     output: OutputConfig
 
 
@@ -1191,6 +1221,42 @@ def _as_range(value: Any, name: str) -> tuple[float, float]:
     return values
 
 
+def _build_learning_curve_config(section: Mapping[str, Any], project_root: Path) -> LearningCurveConfig:
+    """Build and validate the ``learning_curve`` section.
+
+    Args:
+        section: Parsed ``learning_curve`` mapping.
+        project_root: Base directory for relative paths.
+
+    Returns:
+        Validated LearningCurveConfig.
+    """
+    context = "learning_curve"
+    tolerance = _require(section, "loss_tolerance", context)
+    config = LearningCurveConfig(
+        training_shares=tuple(float(value) for value in _require(section, "training_shares", context)),
+        fold_candidates=tuple(int(value) for value in _require(section, "fold_candidates", context)),
+        subsample_seed=int(_require(section, "subsample_seed", context)),
+        repeat_seed_offset=int(_require(section, "repeat_seed_offset", context)),
+        loss_tolerance=None if tolerance is None else float(tolerance),
+        output_dir=_resolve_path(_require(section, "output_dir", context), project_root),
+    )
+    problems = []
+    if len(config.training_shares) < 3 or not all(0.0 < share <= 1.0 for share in config.training_shares):
+        problems.append("training_shares needs at least 3 values in (0, 1] (the power law has 3 parameters)")
+    if 1.0 not in config.training_shares:
+        problems.append("training_shares must include 1.0 (the whole training set)")
+    if not config.fold_candidates or min(config.fold_candidates) < 2:
+        problems.append("fold_candidates must be integers of at least 2")
+    if config.repeat_seed_offset == 0:
+        problems.append("repeat_seed_offset must differ from 0")
+    if config.loss_tolerance is not None and config.loss_tolerance <= 0:
+        problems.append("loss_tolerance must be positive or null")
+    if problems:
+        raise ValueError("Invalid learning_curve configuration: " + "; ".join(problems) + ".")
+    return config
+
+
 def _build_search_config(section: Mapping[str, Any], project_root: Path) -> SearchConfig:
     """Build and validate the ``search`` section.
 
@@ -1299,6 +1365,7 @@ def load_config(config_path: str | Path, project_root: str | Path | None = None)
         evaluation=_build_evaluation_config(_require(raw, "evaluation", "root")),
         explanation=_build_explanation_config(_require(raw, "explanation", "root")),
         search=_build_search_config(_require(raw, "search", "root"), root),
+        learning_curve=_build_learning_curve_config(_require(raw, "learning_curve", "root"), root),
         output=_build_output_config(_require(raw, "output", "root"), root),
     )
 
