@@ -334,7 +334,7 @@ model:
 # Training of the classifier (notebook 05). Each run is saved in runs_dir/<representation>_<date-time>/ with the
 # configuration, the normalization statistics, the best model, the history per epoch and the figures.
 training:
-  representation: spectrogram
+  representation: scalogram
   # dev_subset to test the pipeline, seisbench for the full ESM25.
   feature_source: seisbench
   batch_size: 64
@@ -398,9 +398,17 @@ explanation:
 # Hyperparameter search (notebook 08) with Optuna: TPE sampler, median pruner, resumable. Each trial uses the
 # training settings above except the searched hyperparameters, and is scored by its best validation loss.
 search:
-  study_name: spectrogram_search
+  # Prefix of the study: the study is search_<representation>_<window placement>[_masked][_cv<k>]
+  # (for example search_scalogram_full_masked_cv3), in its own folder of search_dir.
+  study_name: search
   # Trials to finish (completed or pruned), summed over all sessions (including the baseline).
   n_trials: 21
+  # Number of folds k of the cross-validation (folds grouped by event, stratified by label, seed
+  # split.random_seed); every trial trains k models and is scored by the mean best validation loss.
+  # 1 = no cross-validation: one model per trial on the training/validation split of notebook 03.
+  cross_validation_folds: 3
+  # Save the deterministic predictions on the validation records of every finished fold.
+  save_fold_predictions: true
   # Run first, as a reference, the configuration of the model and training sections above.
   enqueue_baseline: true
   space:

@@ -445,12 +445,17 @@ class SearchConfig:
     """Hyperparameter search with Optuna (TPE sampler, median pruner), resumable.
 
     Every trial trains a model with the ``training`` settings, except the searched
-    hyperparameters, and is scored by its best validation loss. Trials are pruned when
-    their validation loss is worse than the median of earlier trials at the same epoch.
+    hyperparameters, on every fold of a cross-validation, and is scored by the mean over the
+    folds of the best validation loss. Trials are pruned when their validation loss is worse
+    than the median of earlier trials at the same epoch of the same fold.
 
     Attributes:
-        study_name: Name of the study (also the name of its folder and database).
+        study_name: Prefix of the study name; the full name adds the data and network variant
+            and the number of folds (see ``wqu.training.search.variant_search``).
         n_trials: Trials to finish (completed or pruned), counting those of earlier sessions.
+        cross_validation_folds: Number of folds k; 1 uses the saved training/validation split.
+        save_fold_predictions: Save the deterministic predictions on the validation records of
+            every finished fold of every trial.
         enqueue_baseline: Run first, as a reference, the configuration of the ``model`` and
             ``training`` sections (it must lie in the search space).
         learning_rate_range: Bounds of the initial learning rate (sampled on a log scale).
@@ -472,6 +477,8 @@ class SearchConfig:
 
     study_name: str
     n_trials: int
+    cross_validation_folds: int
+    save_fold_predictions: bool
     enqueue_baseline: bool
     learning_rate_range: tuple[float, float]
     conv_dropout_choices: tuple[float, ...]
@@ -1273,6 +1280,8 @@ def _build_search_config(section: Mapping[str, Any], project_root: Path) -> Sear
     config = SearchConfig(
         study_name=str(_require(section, "study_name", context)),
         n_trials=int(_require(section, "n_trials", context)),
+        cross_validation_folds=int(_require(section, "cross_validation_folds", context)),
+        save_fold_predictions=bool(_require(section, "save_fold_predictions", context)),
         enqueue_baseline=bool(_require(section, "enqueue_baseline", context)),
         learning_rate_range=_as_range(_require(space, "learning_rate", f"{context}.space"), "learning_rate"),
         conv_dropout_choices=tuple(float(value) for value in _require(space, "conv_dropout", f"{context}.space")),
@@ -1294,6 +1303,8 @@ def _build_search_config(section: Mapping[str, Any], project_root: Path) -> Sear
     problems = []
     if config.n_trials < 1 or config.max_retries < 0:
         problems.append("n_trials must be positive and max_retries non-negative")
+    if config.cross_validation_folds < 1:
+        problems.append("cross_validation_folds must be at least 1 (1 = the saved split)")
     if config.learning_rate_range[0] <= 0:
         problems.append("learning_rate bounds must be positive")
     rates = (*config.conv_dropout_choices, *config.recurrent_dropout_range, *config.head_dropout_range)
