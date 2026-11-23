@@ -36,6 +36,13 @@ VALID_UNCERTAINTY_MEASURES: tuple[str, ...] = (
     "mutual_information",
 )
 REQUIRED_LABELS: frozenset[int] = frozenset({0, 1})
+# Grouping of the training/validation split: event = all the records of an event in the same set (default, also
+# when the configuration does not name a grouping); record = records assigned one by one (no grouping), to measure
+# how optimistic a split without grouping is. The record split is stored next to the event split, with a suffix.
+EVENT_SPLIT_GROUPING = "event"
+RECORD_SPLIT_GROUPING = "record"
+VALID_SPLIT_GROUPINGS: tuple[str, ...] = (EVENT_SPLIT_GROUPING, RECORD_SPLIT_GROUPING)
+RECORD_SPLIT_SUFFIX = "_by_record"
 
 
 @dataclass(frozen=True)
@@ -283,14 +290,16 @@ class SplitConfig:
         validation_fraction: Approximate share of records in the validation set; the
             split takes one fold of ``round(1 / validation_fraction)`` folds.
         random_seed: Random seed of the fold assignment.
-        output_file: CSV file storing the split of every record.
-        tables_dir: Output directory for the summary tables.
+        output_file: CSV file storing the split of every record (with a suffix for the record grouping).
+        tables_dir: Output directory for the summary tables (a subfolder for the record grouping).
+        grouping: ``event`` (records of an event in the same set) or ``record`` (no grouping).
     """
 
     validation_fraction: float
     random_seed: int
     output_file: Path
     tables_dir: Path
+    grouping: str = EVENT_SPLIT_GROUPING
 
     @property
     def n_folds(self) -> int:
@@ -434,6 +443,8 @@ class ExplanationConfig:
         padding_boundary_margin_s: Padding within this distance of the recorded data is left out
             of the "far" padding of the padding checks.
         padding_group_edges: Upper limits of the groups of records by share of padding.
+        map_color_percentile: Percentile of the values of the mean maps used as the top of their
+            common colour scale (100 = the maximum; lower values saturate the few brightest pixels).
     """
 
     uncertainty_measure: str
@@ -445,6 +456,7 @@ class ExplanationConfig:
     random_seed: int
     padding_boundary_margin_s: float
     padding_group_edges: tuple[float, ...]
+    map_color_percentile: float
 
 
 @dataclass(frozen=True)
@@ -1025,11 +1037,20 @@ def _build_split_config(section: Mapping[str, Any], project_root: Path) -> Split
     Returns:
         Validated SplitConfig.
     """
+    grouping = str(section.get("grouping", EVENT_SPLIT_GROUPING))
+    if grouping not in VALID_SPLIT_GROUPINGS:
+        raise ValueError(f"split.grouping must be one of {VALID_SPLIT_GROUPINGS}, got '{grouping}'.")
+    output_file = _resolve_path(_require(section, "output_file", "split"), project_root)
+    tables_dir = _resolve_path(_require(section, "tables_dir", "split"), project_root)
+    if grouping == RECORD_SPLIT_GROUPING:
+        output_file = output_file.with_name(f"{output_file.stem}{RECORD_SPLIT_SUFFIX}{output_file.suffix}")
+        tables_dir = tables_dir / RECORD_SPLIT_SUFFIX.lstrip("_")
     config = SplitConfig(
         validation_fraction=float(_require(section, "validation_fraction", "split")),
         random_seed=int(_require(section, "random_seed", "split")),
-        output_file=_resolve_path(_require(section, "output_file", "split"), project_root),
-        tables_dir=_resolve_path(_require(section, "tables_dir", "split"), project_root),
+        output_file=output_file,
+        tables_dir=tables_dir,
+        grouping=grouping,
     )
     if not 0.0 < config.validation_fraction <= 0.5:
         raise ValueError("split.validation_fraction must be in (0, 0.5].")
@@ -1216,6 +1237,7 @@ def _build_explanation_config(section: Mapping[str, Any]) -> ExplanationConfig:
         random_seed=int(_require(section, "random_seed", context)),
         padding_boundary_margin_s=float(_require(section, "padding_boundary_margin_s", context)),
         padding_group_edges=tuple(float(value) for value in _require(section, "padding_group_edges", context)),
+        map_color_percentile=float(_require(section, "map_color_percentile", context)),
     )
     problems = []
     if config.padding_boundary_margin_s < 0:
@@ -1229,6 +1251,8 @@ def _build_explanation_config(section: Mapping[str, Any]) -> ExplanationConfig:
         problems.append("quantiles must satisfy 0 < low_quantile < high_quantile < 1")
     if min(config.records_per_category, config.mc_samples, config.batch_size) < 1:
         problems.append("records_per_category, mc_samples and batch_size must be positive")
+    if not 0.0 < config.map_color_percentile <= 100.0:
+        problems.append("map_color_percentile must be in (0, 100]")
     if problems:
         raise ValueError("Invalid explanation configuration: " + "; ".join(problems) + ".")
     return config

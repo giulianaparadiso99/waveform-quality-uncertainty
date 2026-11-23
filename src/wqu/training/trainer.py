@@ -35,7 +35,7 @@ import yaml
 from torch import nn
 from torch.utils.data import DataLoader
 
-from wqu.config import DEFAULT_TIME_MASKING, DEFAULT_WINDOW_PLACEMENT, TrainingConfig
+from wqu.config import DEFAULT_TIME_MASKING, DEFAULT_WINDOW_PLACEMENT, EVENT_SPLIT_GROUPING, TrainingConfig
 from wqu.models.loss import prior_corrected_probability
 from wqu.training.metrics import classification_metrics, expected_calibration_error
 
@@ -46,6 +46,7 @@ CHECKPOINT_FILE = "checkpoint.pt"
 RESUME_SECTIONS: tuple[str, ...] = ("model", "training")
 RESUME_IGNORED_KEYS: tuple[str, ...] = ("resume",)
 WINDOW_PLACEMENT_SETTING = "window_placement"
+SPLIT_GROUPING_SETTING = "split_grouping"
 VALIDATION_PREDICTIONS_FILE = "validation_predictions.csv"
 LATEST_RUN = "latest"
 RUN_TIME_FORMAT = "%Y%m%d_%H%M%S"
@@ -137,6 +138,11 @@ def _window_placement(raw: dict) -> str:
     return str(raw["preprocessing"]["window"].get("placement", DEFAULT_WINDOW_PLACEMENT))
 
 
+def _split_grouping(raw: dict) -> str:
+    """Grouping of the split of a parsed configuration (by event for files written before the option)."""
+    return str(raw.get("split", {}).get("grouping", EVENT_SPLIT_GROUPING))
+
+
 def config_window_placement(config_path: Path) -> str:
     """Window placement of the preprocessing named in a configuration file.
 
@@ -169,13 +175,14 @@ def training_settings(config_path: Path) -> dict:
 
     Returns:
         Dictionary with the ``model`` and ``training`` sections (without the keys irrelevant
-        to resuming) and the window placement of the features.
+        to resuming), the window placement of the features and the grouping of the split.
     """
     raw = _read_yaml(config_path)
     settings = {section: dict(raw[section]) for section in RESUME_SECTIONS}
     for key in RESUME_IGNORED_KEYS:
         settings["training"].pop(key, None)
     settings[WINDOW_PLACEMENT_SETTING] = _window_placement(raw)
+    settings[SPLIT_GROUPING_SETTING] = _split_grouping(raw)
     return settings
 
 
@@ -192,15 +199,16 @@ def prepare_run_dir(runs_dir: Path, representation: str, config_path: Path, resu
         Tuple (run folder, whether it is resumed).
 
     Raises:
-        ValueError: If the unfinished run was started with different model, training or window placement settings.
+        ValueError: If the unfinished run was started with different model, training, window placement or split
+            settings.
     """
     unfinished = latest_unfinished_run(runs_dir, representation) if resume else None
     if unfinished is None:
         return create_run_dir(runs_dir, representation, config_path), False
     if training_settings(unfinished / CONFIG_COPY_FILE) != training_settings(config_path):
         raise ValueError(
-            f"{unfinished.name} was started with other model, training or window placement settings: restore them, "
-            "or set training.resume to false to start a new run."
+            f"{unfinished.name} was started with other model, training, window placement or split settings: "
+            "restore them, or set training.resume to false to start a new run."
         )
     return unfinished, True
 

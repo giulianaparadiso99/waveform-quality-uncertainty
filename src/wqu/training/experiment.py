@@ -19,7 +19,7 @@ import numpy as np
 import pandas as pd
 import torch
 
-from wqu.config import ModelConfig, ProjectConfig, TrainingConfig
+from wqu.config import EVENT_SPLIT_GROUPING, ModelConfig, ProjectConfig, TrainingConfig
 from wqu.data.loading import CV_COMPONENTS
 from wqu.data.splitting import (
     FOLD_COLUMN,
@@ -119,7 +119,13 @@ def load_experiment_records(config: ProjectConfig) -> ExperimentRecords:
 
     Returns:
         ExperimentRecords.
+
+    Raises:
+        ValueError: If the split is not grouped by event (the experiments compare models on unseen events).
     """
+    if config.split.grouping != EVENT_SPLIT_GROUPING:
+        raise ValueError(f"split.grouping is '{config.split.grouping}': the learning curve and the search use the "
+                         f"split grouped by event, set it to '{EVENT_SPLIT_GROUPING}'.")
     config_columns = config.columns
     features_path = feature_file_path(config.preprocessing, config.training.feature_source)
     check_feature_placement(features_path, config.preprocessing)
