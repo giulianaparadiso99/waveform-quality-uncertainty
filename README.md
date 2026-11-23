@@ -74,6 +74,11 @@ pytest
 The tests compare the spectrogram with `scipy.signal.spectrogram` and the scalogram with
 `obspy.signal.tf_misfit.cwt`, and check the averaging on the logarithmic frequency grid and on the time bins.
 
+## License
+
+The code is released under the MIT License (see [LICENSE](LICENSE)). The ESM25 data are distributed by their
+authors under the CC BY-SA 4.0 licence (see [data/README.md](data/README.md)).
+
 ## Main references
 
 - ESM25: Cianetti et al. (2026), doi:10.13127/ai/esm25.
