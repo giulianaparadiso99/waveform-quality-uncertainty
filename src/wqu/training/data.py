@@ -101,6 +101,21 @@ def frequency_statistics(path: Path, representation: str, rows: np.ndarray) -> F
     return FrequencyStatistics(mean=mean.astype(np.float32), std=std.astype(np.float32))
 
 
+def with_time_mask_channel(images: np.ndarray, masks: np.ndarray) -> np.ndarray:
+    """Append the time mask to images as one more channel, constant over frequency.
+
+    Args:
+        images: Images of shape (..., channels, frequencies, times).
+        masks: Time masks of shape (..., times), true where the time bin has recorded data.
+
+    Returns:
+        Float32 array of shape (..., channels + 1, frequencies, times).
+    """
+    mask_channel = np.broadcast_to(np.asarray(masks, dtype=np.float32)[..., None, None, :],
+                                   (*images.shape[:-3], 1, *images.shape[-2:]))
+    return np.concatenate([np.asarray(images, dtype=np.float32), mask_channel], axis=-3)
+
+
 class FeatureDataset(Dataset):
     """Standardized images and labels read one record at a time from the feature file.
 
@@ -152,8 +167,7 @@ class FeatureDataset(Dataset):
         image = self._file[self.representation][row].astype(np.float32)
         standardized = (image - self.mean) / self.std
         if self.time_masks is not None:
-            mask_channel = np.broadcast_to(self.time_masks[row].astype(np.float32), standardized.shape[1:])
-            standardized = np.concatenate([standardized, mask_channel[None]], axis=0)
+            standardized = with_time_mask_channel(standardized, self.time_masks[row])
         return torch.from_numpy(np.ascontiguousarray(standardized)), torch.tensor(self.labels[position])
 
 
