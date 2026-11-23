@@ -396,6 +396,10 @@ class EvaluationConfig:
         reported_retained_fractions: Retained fractions listed in the summary table.
         random_repeats: Random orderings averaged for the random-rejection baseline.
         random_seed: Seed of the random orderings.
+        distance_edges_km: Interior edges of the hypocentral-distance strata (the first and
+            last strata are open).
+        magnitude_edges: Interior edges of the magnitude strata.
+        min_class_records: Records of each class needed for an AUC in the distance-magnitude grid.
     """
 
     run: str
@@ -406,6 +410,9 @@ class EvaluationConfig:
     reported_retained_fractions: tuple[float, ...]
     random_repeats: int
     random_seed: int
+    distance_edges_km: tuple[float, ...]
+    magnitude_edges: tuple[float, ...]
+    min_class_records: int
 
 
 @dataclass(frozen=True)
@@ -1166,6 +1173,11 @@ def _build_evaluation_config(section: Mapping[str, Any]) -> EvaluationConfig:
         ),
         random_repeats=int(_require(section, "random_repeats", context)),
         random_seed=int(_require(section, "random_seed", context)),
+        distance_edges_km=_as_positive_float_tuple(_require(section, "distance_edges_km", context),
+                                                   f"{context}.distance_edges_km"),
+        magnitude_edges=_as_positive_float_tuple(_require(section, "magnitude_edges", context),
+                                                 f"{context}.magnitude_edges"),
+        min_class_records=int(_require(section, "min_class_records", context)),
     )
     problems = []
     unknown = sorted(set(config.uncertainty_measures) - set(VALID_UNCERTAINTY_MEASURES))
@@ -1177,6 +1189,8 @@ def _build_evaluation_config(section: Mapping[str, Any]) -> EvaluationConfig:
         problems.append("min_retained_fraction and retained_step must be in (0, 1)")
     if any(not config.min_retained_fraction <= fraction <= 1.0 for fraction in config.reported_retained_fractions):
         problems.append("reported_retained_fractions must lie between min_retained_fraction and 1")
+    if config.min_class_records < 1:
+        problems.append("min_class_records must be at least 1")
     if problems:
         raise ValueError("Invalid evaluation configuration: " + "; ".join(problems) + ".")
     return config

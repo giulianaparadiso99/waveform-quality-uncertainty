@@ -1345,6 +1345,79 @@ def plot_profiles_by_predicted_class(
     return figure
 
 
+AUC_COLORMAP = "Greens"
+AUC_COLOR_RANGE: tuple[float, float] = (0.5, 1.0)
+AUC_TEXT_SWITCH = 0.85
+CLASS_NAMES_BY_LABEL: Mapping[int, str] = {0: "good", 1: "bad"}
+
+
+def plot_auc_grid(auc: pd.DataFrame, counts: pd.DataFrame, row_label: str, column_label: str, ax: Axes) -> Axes:
+    """AUC in every cell of a two-way stratification, with the number of records.
+
+    Args:
+        auc: AUC table (rows and columns are strata; NaN where too few records).
+        counts: Records in every cell, same shape as ``auc``.
+        row_label: Name of the row variable.
+        column_label: Name of the column variable.
+        ax: Axes to draw on.
+
+    Returns:
+        The Axes.
+    """
+    image = ax.imshow(auc.to_numpy(dtype=float), cmap=AUC_COLORMAP, vmin=AUC_COLOR_RANGE[0], vmax=AUC_COLOR_RANGE[1],
+                      aspect="auto")
+    for row in range(auc.shape[0]):
+        for column in range(auc.shape[1]):
+            value, count = auc.iat[row, column], int(counts.iat[row, column])
+            text = f"{value:.2f}\n({count:,})" if np.isfinite(value) else (f"({count:,})" if count else "")
+            color = "white" if np.isfinite(value) and value > AUC_TEXT_SWITCH else WINDOW_TRACE_COLOR
+            ax.text(column, row, text, ha="center", va="center", fontsize=7, color=color)
+    ax.set_xticks(range(auc.shape[1]), [str(name) for name in auc.columns], rotation=30, ha="right")
+    ax.set_yticks(range(auc.shape[0]), [str(name) for name in auc.index])
+    ax.set_xlabel(column_label)
+    ax.set_ylabel(row_label)
+    ax.grid(False)
+    ax.figure.colorbar(image, ax=ax, label="AUC")
+    return ax
+
+
+def plot_class_trends(trends: pd.DataFrame, x_label: str, title: str) -> Figure:
+    """Mean probability and error rate of each class along ordered strata.
+
+    Left: observed bad rate and mean prior-corrected probability of bad, of all records and of
+    each class. Right: error rate of each class (good records predicted bad, bad records predicted good).
+
+    Args:
+        trends: Output of ``wqu.evaluation.strata.class_trends``.
+        x_label: Name of the stratified variable.
+        title: Figure title.
+
+    Returns:
+        The Figure.
+    """
+    figure, (probability_ax, error_ax) = plt.subplots(1, 2, figsize=(14, 4.8), constrained_layout=True)
+    positions = np.arange(len(trends))
+    probability_ax.plot(positions, trends["observed_bad_rate"], color=REFERENCE_LINE_COLOR, linestyle="--",
+                        linewidth=LINE_WIDTH, marker="o", markersize=4, label="observed bad rate")
+    probability_ax.plot(positions, trends["mean_probability"], color=NEUTRAL_COLOR, linewidth=LINE_WIDTH,
+                        marker="o", markersize=4, label="mean p(bad), all records")
+    for label, name in CLASS_NAMES_BY_LABEL.items():
+        probability_ax.plot(positions, trends[f"mean_probability_{name}"], color=LABEL_COLORS[label],
+                            linewidth=LINE_WIDTH, marker="o", markersize=4, label=f"mean p(bad), true {name}")
+        error_ax.plot(positions, trends[f"error_rate_{name}"], color=LABEL_COLORS[label], linewidth=LINE_WIDTH,
+                      marker="o", markersize=4, label=f"true {name}")
+    probability_ax.set_ylabel("share or probability of bad")
+    error_ax.set_ylabel("error rate")
+    probability_ax.set_ylim(0, 1)
+    error_ax.set_ylim(bottom=0)
+    for ax in (probability_ax, error_ax):
+        ax.set_xticks(positions, [str(name) for name in trends.index], rotation=30, ha="right")
+        ax.set_xlabel(x_label)
+        ax.legend(fontsize=8)
+    figure.suptitle(title, x=0.01, ha="left")
+    return figure
+
+
 def plot_category_distributions(values: pd.Series, categories: pd.Series, order: Sequence[str], label: str, ax: Axes) -> Axes:
     """Box plot of one per-record quantity by category.
 

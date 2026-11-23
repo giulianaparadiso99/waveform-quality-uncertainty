@@ -375,6 +375,12 @@ evaluation:
   # Random-rejection baseline averaged over this many orderings.
   random_repeats: 50
   random_seed: 42
+  # Strata of hypocentral distance (km) and magnitude for the metrics by stratum: interior edges, the first
+  # and last strata are open (e.g. distance below 25 km, above 300 km).
+  distance_edges_km: [25, 50, 100, 200, 300]
+  magnitude_edges: [3.5, 4.0, 4.5, 5.0, 5.5]
+  # Records of each class needed for an AUC in a cell of the distance-magnitude grid.
+  min_class_records: 30
 
 # Grad-CAM analysis by prediction category (notebook 07), on the run chosen in evaluation.run.
 # Categories: MC prediction right or wrong x uncertainty low / middle / high x true class.
