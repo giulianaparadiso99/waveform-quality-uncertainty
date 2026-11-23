@@ -1,0 +1,1531 @@
+"""Plotting functions for the exploratory analysis.
+
+Each function draws on a given Matplotlib Axes (or creates a Figure when the
+plot needs several panels) and returns it, so that notebooks decide layout and
+saving. Colors: good and bad records use two fixed categorical colors; single
+measures use one neutral color; rates use a single-hue sequential colormap.
+"""
+
+from __future__ import annotations
+
+from collections.abc import Iterable, Mapping, Sequence
+from pathlib import Path
+from typing import TYPE_CHECKING
+
+import cartopy.crs as ccrs
+import cartopy.feature as cfeature
+import matplotlib.pyplot as plt
+from matplotlib.backends.backend_pdf import PdfPages
+import numpy as np
+import pandas as pd
+from matplotlib.axes import Axes
+from matplotlib.figure import Figure
+from matplotlib.ticker import MaxNLocator
+
+if TYPE_CHECKING:
+    from wqu.evaluation.explanations import ProfileStatistics
+
+LABEL_COLORS: Mapping[int, str] = {0: "#2a78d6", 1: "#eb6834"}
+# Categorical colors for groups other than the two classes (fixed order, never cycled).
+GROUP_COLORS: tuple[str, ...] = ("#1baf7a", "#eda100", "#e87ba4", "#008300")
+NEUTRAL_COLOR = "#52514e"
+REFERENCE_LINE_COLOR = "#9a9993"
+PADDING_SHADE_COLOR = "#e6e5e0"
+RATE_COLORMAP = "Oranges"
+POWER_COLORMAP = "Blues"
+WINDOW_TRACE_COLOR = "#2a2a28"
+OUTSIDE_TRACE_COLOR = "#c3c2bc"
+WINDOW_SHADE_COLOR = "#e9f1fb"
+MAP_LAND_COLOR = "#f2f1ee"
+MAP_EDGE_COLOR = "#9a9993"
+MAP_POINT_EDGE_COLOR = "#6b6a65"
+LINE_WIDTH = 2.0
+DEFAULT_DPI = 300
+
+
+def apply_plot_style() -> None:
+    """Set a light, recessive style for axes and grids."""
+    plt.rcParams.update(
+        {
+            "figure.dpi": 110,
+            "savefig.dpi": DEFAULT_DPI,
+            "font.size": 10,
+            "axes.titlesize": 11,
+            "axes.labelsize": 10,
+            "axes.spines.top": False,
+            "axes.spines.right": False,
+            "axes.edgecolor": REFERENCE_LINE_COLOR,
+            "axes.grid": True,
+            "axes.axisbelow": True,
+            "grid.color": "#ececea",
+            "grid.linewidth": 0.8,
+            "legend.frameon": False,
+        }
+    )
+
+
+def save_figure(figure: Figure, path: Path) -> Path:
+    """Save a figure, creating the parent directory if needed.
+
+    Args:
+        figure: Figure to save.
+        path: Output file (format from the extension).
+
+    Returns:
+        The output path.
+    """
+    path.parent.mkdir(parents=True, exist_ok=True)
+    figure.savefig(path, bbox_inches="tight")
+    return path
+
+
+def _histogram_bins(values: pd.Series, n_bins: int, log_scale: bool) -> np.ndarray:
+    """Compute common histogram bin edges for all classes.
+
+    Args:
+        values: Positive values when ``log_scale`` is True.
+        n_bins: Number of bins.
+        log_scale: Use logarithmically spaced edges.
+
+    Returns:
+        Bin edges.
+    """
+    low, high = float(values.min()), float(values.max())
+    if log_scale:
+        return np.logspace(np.log10(low), np.log10(high), n_bins + 1)
+    return np.linspace(low, high, n_bins + 1)
+
+
+def plot_numeric_distribution_by_label(
+    metadata: pd.DataFrame,
+    column: str,
+    label_column: str,
+    label_names: Mapping[int, str],
+    ax: Axes,
+    n_bins: int = 50,
+    log_scale: bool = False,
+    quantile_range: tuple[float, float] | None = None,
+) -> Axes:
+    """Overlay the normalized histograms of a numeric column for each label.
+
+    Args:
+        metadata: Combined metadata.
+        column: Numeric column.
+        label_column: Label column.
+        label_names: Display name of each label.
+        ax: Axes to draw on.
+        n_bins: Number of bins.
+        log_scale: Logarithmic x axis (non-positive values are dropped).
+        quantile_range: If given, only values between these quantiles of the
+            pooled data are shown, so that extreme outliers do not hide the bulk.
+
+    Returns:
+        The Axes.
+    """
+    values = pd.to_numeric(metadata[column], errors="coerce")
+    valid = values.notna() & (values > 0 if log_scale else True)
+    if quantile_range is not None:
+        low, high = values[valid].quantile(list(quantile_range))
+        valid &= values.between(low, high)
+    if not valid.any():
+        raise ValueError(f"Column '{column}' has no values to plot.")
+    edges = _histogram_bins(values[valid], n_bins, log_scale)
+    for label, name in label_names.items():
+        selected = values[valid & (metadata[label_column] == label)]
+        ax.hist(
+            selected,
+            bins=edges,
+            density=True,
+            histtype="step",
+            linewidth=LINE_WIDTH,
+            color=LABEL_COLORS[label],
+            label=f"{name} (n={len(selected):,})",
+        )
+    if log_scale:
+        ax.set_xscale("log")
+    ax.set_xlabel(column)
+    ax.set_ylabel("density")
+    ax.legend()
+    return ax
+
+
+def plot_category_bad_rate(table: pd.DataFrame, overall_bad_rate: float, ax: Axes) -> Axes:
+    """Horizontal bars of the bad rate per category, annotated with record counts.
+
+    Args:
+        table: Output of ``categorical_distribution_by_label``.
+        overall_bad_rate: Bad rate of the whole dataset, drawn as reference line.
+        ax: Axes to draw on.
+
+    Returns:
+        The Axes.
+    """
+    ordered = table.iloc[::-1]
+    positions = np.arange(len(ordered))
+    ax.barh(positions, ordered["bad_rate"], color=LABEL_COLORS[1], height=0.7)
+    ax.axvline(overall_bad_rate, color=REFERENCE_LINE_COLOR, linewidth=1.2, linestyle="--")
+    ax.set_yticks(positions, ordered.index.astype(str))
+    for position, (rate, count) in enumerate(zip(ordered["bad_rate"], ordered["n_records"])):
+        ax.text(rate + 0.01, position, f"n={count:,}", va="center", fontsize=8, color=NEUTRAL_COLOR)
+    ax.set_xlim(0, 1.15)
+    ax.set_xlabel("fraction of bad records")
+    ax.set_ylabel(table.index.name)
+    ax.grid(axis="y", visible=False)
+    return ax
+
+
+def plot_univariate_auc(auc_table: pd.DataFrame, group_order: Sequence[str]) -> Figure:
+    """Bar chart of the univariate separation of each feature, one panel per group.
+
+    Args:
+        auc_table: Output of ``univariate_auc_table``.
+        group_order: Order of the feature groups (one panel each).
+
+    Returns:
+        The Figure.
+    """
+    heights = [max(1, int((auc_table["group"] == group).sum())) for group in group_order]
+    figure, axes = plt.subplots(
+        len(group_order), 1, figsize=(7, 0.35 * sum(heights) + 1.2 * len(group_order)),
+        gridspec_kw={"height_ratios": heights}, sharex=True, squeeze=False,
+    )
+    for ax, group in zip(axes[:, 0], group_order):
+        rows = auc_table[auc_table["group"] == group].sort_values("separation")
+        positions = np.arange(len(rows))
+        ax.barh(positions, rows["separation"] - 0.5, left=0.5, color=NEUTRAL_COLOR, height=0.6)
+        ax.set_yticks(positions, rows["feature"])
+        for position, value in enumerate(rows["separation"]):
+            ax.text(value + 0.005, position, f"{value:.2f}", va="center", fontsize=8, color=NEUTRAL_COLOR)
+        ax.axvline(0.5, color=REFERENCE_LINE_COLOR, linewidth=1.0)
+        ax.set_title(group, loc="left")
+        ax.grid(axis="y", visible=False)
+    axes[-1, 0].set_xlim(0.5, 1.0)
+    axes[-1, 0].set_xlabel("univariate separation  max(AUC, 1 - AUC)")
+    figure.tight_layout()
+    return figure
+
+
+def plot_stratified_bad_rate(rates: pd.DataFrame, counts: pd.DataFrame, ax: Axes) -> Axes:
+    """Heatmap of bad rates within strata, annotated with rate and record count.
+
+    Args:
+        rates: Bad-rate table from ``stratified_bad_rate`` (missing = too few records).
+        counts: Record-count table from ``stratified_bad_rate``.
+        ax: Axes to draw on.
+
+    Returns:
+        The Axes.
+    """
+    image = ax.imshow(rates.to_numpy(dtype=float), cmap=RATE_COLORMAP, vmin=0.0, vmax=1.0, aspect="auto")
+    ax.set_xticks(np.arange(rates.shape[1]), rates.columns.astype(str), rotation=45, ha="right")
+    ax.set_yticks(np.arange(rates.shape[0]), rates.index.astype(str))
+    for row in range(rates.shape[0]):
+        for column in range(rates.shape[1]):
+            rate = rates.iat[row, column]
+            if pd.notna(rate):
+                text_color = "white" if rate > 0.6 else "black"
+                ax.text(column, row, f"{rate:.2f}\n{int(counts.iat[row, column]):,}",
+                        ha="center", va="center", fontsize=7, color=text_color)
+    ax.set_xlabel(rates.columns.name)
+    ax.set_ylabel(rates.index.name)
+    ax.grid(visible=False)
+    ax.figure.colorbar(image, ax=ax, label="fraction of bad records")
+    return ax
+
+
+def plot_waveform_with_padding(
+    waveform: np.ndarray,
+    sampling_rate_hz: float,
+    signal_windows: Mapping[str, tuple[float, float]],
+    title: str,
+) -> Figure:
+    """Plot the components of a trace, shading the zero-padded intervals.
+
+    Args:
+        waveform: Array of shape (components, samples).
+        sampling_rate_hz: Sampling rate of the array.
+        signal_windows: Interval with recorded data per component, in seconds.
+        title: Figure title.
+
+    Returns:
+        The Figure.
+    """
+    components = list(signal_windows)
+    if waveform.shape[0] != len(components):
+        raise ValueError("Number of waveform components and signal windows differ.")
+    time_s = np.arange(waveform.shape[1]) / sampling_rate_hz
+    figure, axes = plt.subplots(len(components), 1, figsize=(10, 1.8 * len(components)), sharex=True)
+    for ax, component, trace in zip(np.atleast_1d(axes), components, waveform):
+        start_s, end_s = signal_windows[component]
+        ax.axvspan(time_s[0], start_s, color=PADDING_SHADE_COLOR, linewidth=0)
+        ax.axvspan(end_s, time_s[-1], color=PADDING_SHADE_COLOR, linewidth=0)
+        ax.plot(time_s, trace, color=NEUTRAL_COLOR, linewidth=0.6)
+        ax.set_ylabel(f"acceleration {component}")
+        ax.set_xlim(time_s[0], time_s[-1])
+    np.atleast_1d(axes)[-1].set_xlabel("time from trace start [s] (shaded: zero padding)")
+    figure.suptitle(title, x=0.01, ha="left")
+    figure.tight_layout()
+    return figure
+
+
+def plot_magnitude_distance_scatter(
+    metadata: pd.DataFrame,
+    distance_column: str,
+    magnitude_column: str,
+    label_column: str,
+    label_names: Mapping[int, str],
+    ax: Axes,
+    point_size: float = 2.0,
+    alpha: float = 0.15,
+) -> Axes:
+    """Scatter plot of magnitude against distance (log scale), colored by label.
+
+    Args:
+        metadata: Combined metadata.
+        distance_column: Distance column (positive values).
+        magnitude_column: Magnitude column.
+        label_column: Label column.
+        label_names: Display name of each label.
+        ax: Axes to draw on.
+        point_size: Marker area.
+        alpha: Marker opacity (low values reveal density).
+
+    Returns:
+        The Axes.
+    """
+    distance = pd.to_numeric(metadata[distance_column], errors="coerce")
+    magnitude = pd.to_numeric(metadata[magnitude_column], errors="coerce")
+    valid = distance.gt(0) & magnitude.notna()
+    for label, name in label_names.items():
+        selected = valid & (metadata[label_column] == label)
+        ax.scatter(
+            distance[selected], magnitude[selected], s=point_size, alpha=alpha,
+            color=LABEL_COLORS[label], linewidths=0, label=f"{name} (n={int(selected.sum()):,})",
+        )
+    ax.set_xscale("log")
+    ax.set_xlabel(distance_column)
+    ax.set_ylabel(magnitude_column)
+    legend = ax.legend(markerscale=4)
+    for handle in legend.legend_handles:
+        handle.set_alpha(1.0)
+    return ax
+
+
+def plot_binned_rate_2d(
+    rates: np.ndarray,
+    x_edges: np.ndarray,
+    y_edges: np.ndarray,
+    ax: Axes,
+    x_label: str,
+    y_label: str,
+    log_x: bool = False,
+) -> Axes:
+    """Map of the bad rate on a two-dimensional grid; empty cells have too few records.
+
+    Args:
+        rates: Array of shape (len(x_edges) - 1, len(y_edges) - 1) from ``binned_bad_rate_2d``.
+        x_edges: Bin edges along x.
+        y_edges: Bin edges along y.
+        ax: Axes to draw on.
+        x_label: Label of the x axis.
+        y_label: Label of the y axis.
+        log_x: Logarithmic x axis.
+
+    Returns:
+        The Axes.
+    """
+    mesh = ax.pcolormesh(x_edges, y_edges, np.ma.masked_invalid(rates.T), cmap=RATE_COLORMAP, vmin=0.0, vmax=1.0,
+                         rasterized=True)
+    if log_x:
+        ax.set_xscale("log")
+    ax.set_xlabel(x_label)
+    ax.set_ylabel(y_label)
+    ax.grid(visible=False)
+    ax.figure.colorbar(mesh, ax=ax, label="fraction of bad records")
+    return ax
+
+
+def create_map_axes(
+    figure: Figure, subplot_position: int, extent: tuple[float, float, float, float], show_geography: bool
+) -> Axes:
+    """Add a geographic Axes (Plate Carree) with optional land, coastlines and borders.
+
+    Args:
+        figure: Figure receiving the Axes.
+        subplot_position: Three-digit Matplotlib subplot code (e.g. 211).
+        extent: (lon_min, lon_max, lat_min, lat_max).
+        show_geography: Draw land, coastlines and borders (Natural Earth data).
+
+    Returns:
+        The cartopy GeoAxes.
+    """
+    ax = figure.add_subplot(subplot_position, projection=ccrs.PlateCarree())
+    ax.set_extent(extent, crs=ccrs.PlateCarree())
+    if show_geography:
+        ax.add_feature(cfeature.LAND, facecolor=MAP_LAND_COLOR, edgecolor="none")
+        ax.add_feature(cfeature.COASTLINE, edgecolor=MAP_EDGE_COLOR, linewidth=0.5)
+        ax.add_feature(cfeature.BORDERS, edgecolor=MAP_EDGE_COLOR, linewidth=0.3)
+    gridlines = ax.gridlines(draw_labels=True, linewidth=0.3, color=MAP_EDGE_COLOR, alpha=0.5)
+    gridlines.top_labels = False
+    gridlines.right_labels = False
+    return ax
+
+
+def plot_rate_map(
+    table: pd.DataFrame,
+    longitude_column: str,
+    latitude_column: str,
+    ax: Axes,
+    title: str,
+    size_range: tuple[float, float] = (3.0, 120.0),
+) -> Axes:
+    """Points on a map colored by bad rate and sized by number of records.
+
+    Larger groups are drawn first so that small groups remain visible.
+
+    Args:
+        table: Output of ``group_bad_rate`` with coordinate columns.
+        longitude_column: Longitude column of ``table``.
+        latitude_column: Latitude column of ``table``.
+        ax: GeoAxes from ``create_map_axes``.
+        title: Axes title.
+        size_range: Marker areas of the smallest and largest group.
+
+    Returns:
+        The Axes.
+    """
+    ordered = table.dropna(subset=[longitude_column, latitude_column]).sort_values("n_records", ascending=False)
+    root_counts = np.sqrt(ordered["n_records"].to_numpy(dtype=float))
+    span = max(root_counts.max() - root_counts.min(), 1e-9)
+    sizes = size_range[0] + (root_counts - root_counts.min()) / span * (size_range[1] - size_range[0])
+    points = ax.scatter(
+        ordered[longitude_column], ordered[latitude_column], s=sizes, c=ordered["bad_rate"],
+        cmap=RATE_COLORMAP, vmin=0.0, vmax=1.0, edgecolors=MAP_POINT_EDGE_COLOR, linewidths=0.2,
+        transform=ccrs.PlateCarree(),
+    )
+    ax.set_title(f"{title} (n={len(ordered):,}; marker area ~ number of records)", loc="left")
+    ax.figure.colorbar(points, ax=ax, label="fraction of bad records", shrink=0.8)
+    return ax
+
+
+def plot_records_per_year(table: pd.DataFrame, label_names: Mapping[int, str], ax: Axes) -> Axes:
+    """Number of records per year for each label.
+
+    Args:
+        table: Output of ``records_per_year_by_label``.
+        label_names: Display name of each label.
+        ax: Axes to draw on.
+
+    Returns:
+        The Axes.
+    """
+    for label, name in label_names.items():
+        if label in table.columns:
+            ax.step(table.index, table[label], where="mid", linewidth=LINE_WIDTH,
+                    color=LABEL_COLORS[label], label=name)
+    ax.set_xlabel("year")
+    ax.set_ylabel("number of records")
+    ax.legend()
+    return ax
+
+
+def plot_mean_spectra(mean_log_psd: pd.DataFrame, counts: pd.Series, ax: Axes) -> Axes:
+    """Mean power spectra per original sampling rate, with each Nyquist frequency marked.
+
+    Args:
+        mean_log_psd: Mean log10 PSD, frequencies x groups (original sampling rates in Hz).
+        counts: Number of averaged spectra per group.
+        ax: Axes to draw on.
+
+    Returns:
+        The Axes.
+    """
+    if mean_log_psd.shape[1] > len(GROUP_COLORS):
+        raise ValueError(f"At most {len(GROUP_COLORS)} groups can be drawn, got {mean_log_psd.shape[1]}.")
+    positive = mean_log_psd.index > 0
+    for color, group in zip(GROUP_COLORS, mean_log_psd.columns):
+        ax.plot(
+            mean_log_psd.index[positive], mean_log_psd.loc[positive, group], color=color,
+            linewidth=LINE_WIDTH, label=f"{group:g} Hz (n={int(counts[group]):,})",
+        )
+        ax.axvline(group / 2.0, color=color, linewidth=1.0, linestyle=":")
+    ax.set_xscale("log")
+    ax.set_xlabel("frequency [Hz] (dotted: original Nyquist frequency)")
+    ax.set_ylabel("mean log10 PSD")
+    ax.legend(title="original sampling rate")
+    return ax
+
+
+def plot_window_overlay(
+    trace: np.ndarray,
+    sampling_rate_hz: float,
+    window_start: int,
+    window_stop: int,
+    components: Sequence[str],
+    title: str,
+) -> Figure:
+    """Plot each component of a stored trace with the analysis window highlighted.
+
+    Samples outside the window (removed by the cut) are drawn in light grey and
+    samples inside it in dark grey, on top of each other, so that the cut can be
+    checked visually.
+
+    Args:
+        trace: Stored trace, shape (components, samples).
+        sampling_rate_hz: Sampling rate of the trace.
+        window_start: First sample of the window (may be negative).
+        window_stop: Sample after the last one of the window (may exceed the trace).
+        components: Component names (one per row).
+        title: Figure title.
+
+    Returns:
+        The Figure.
+    """
+    time_s = np.arange(trace.shape[-1]) / sampling_rate_hz
+    inside = (np.arange(trace.shape[-1]) >= window_start) & (np.arange(trace.shape[-1]) < window_stop)
+    figure, axes = plt.subplots(len(components), 1, figsize=(10, 1.8 * len(components)), sharex=True)
+    for ax, component, values in zip(np.atleast_1d(axes), components, trace):
+        ax.axvspan(window_start / sampling_rate_hz, window_stop / sampling_rate_hz, color=WINDOW_SHADE_COLOR, linewidth=0)
+        ax.plot(time_s, values, color=OUTSIDE_TRACE_COLOR, linewidth=0.6)
+        ax.plot(time_s, np.where(inside, values, np.nan), color=WINDOW_TRACE_COLOR, linewidth=0.6)
+        ax.set_ylabel(f"acceleration {component}")
+        ax.set_xlim(time_s[0], time_s[-1])
+    np.atleast_1d(axes)[-1].set_xlabel("time from trace start [s] (dark, shaded: analysis window; light: removed)")
+    figure.suptitle(title, x=0.01, ha="left")
+    figure.tight_layout()
+    return figure
+
+
+def plot_time_frequency(
+    image_db: np.ndarray,
+    frequency_edges_hz: np.ndarray,
+    times_s: np.ndarray,
+    ax: Axes,
+    value_range: tuple[float, float],
+) -> object:
+    """Draw one time-frequency image (decibels) with a logarithmic frequency axis.
+
+    Args:
+        image_db: Array of shape (frequencies, times).
+        frequency_edges_hz: Band edges (frequencies + 1 values).
+        times_s: Time-bin centres (equally spaced).
+        ax: Axes to draw on.
+        value_range: Colour scale limits (dB).
+
+    Returns:
+        The QuadMesh, for a shared colour bar.
+    """
+    step = times_s[1] - times_s[0]
+    time_edges = np.concatenate((times_s - step / 2, [times_s[-1] + step / 2]))
+    mesh = ax.pcolormesh(time_edges, frequency_edges_hz, image_db, cmap=POWER_COLORMAP,
+                         vmin=value_range[0], vmax=value_range[1], shading="flat", rasterized=True)
+    ax.set_yscale("log")
+    ax.grid(visible=False)
+    return mesh
+
+
+def plot_representation_comparison(
+    window_waveform: np.ndarray,
+    waveform_rate_hz: float,
+    spectrogram_db: np.ndarray,
+    scalogram_db: np.ndarray,
+    frequency_edges_hz: np.ndarray,
+    times_s: np.ndarray,
+    components: Sequence[str],
+    title: str,
+) -> Figure:
+    """Waveform, spectrogram and scalogram of the analysis window, one row per component.
+
+    Each representation uses one colour scale for its three components (2nd to
+    99.5th percentile of its values), so that differences between components stay visible.
+
+    Args:
+        window_waveform: Resampled waveform of the window, shape (components, samples).
+        waveform_rate_hz: Sampling rate of ``window_waveform``.
+        spectrogram_db: Array of shape (components, frequencies, times).
+        scalogram_db: Array of shape (components, frequencies, times).
+        frequency_edges_hz: Band edges of the grid.
+        times_s: Time-bin centres of the grid.
+        components: Component names.
+        title: Figure title.
+
+    Returns:
+        The Figure.
+    """
+    figure, axes = plt.subplots(
+        len(components), 3, figsize=(16, 2.8 * len(components)), sharex=True, squeeze=False, layout="constrained"
+    )
+    waveform_time_s = np.arange(window_waveform.shape[-1]) / waveform_rate_hz
+    representations = {"spectrogram [dB]": spectrogram_db, "scalogram [dB]": scalogram_db}
+    meshes = {}
+    for row, component in enumerate(components):
+        axes[row, 0].plot(waveform_time_s, window_waveform[row], color=WINDOW_TRACE_COLOR, linewidth=0.5)
+        axes[row, 0].set_ylabel(f"acceleration {component}")
+        for column, (name, values) in enumerate(representations.items(), start=1):
+            value_range = tuple(np.percentile(values, [2.0, 99.5]))
+            meshes[name] = plot_time_frequency(values[row], frequency_edges_hz, times_s, axes[row, column], value_range)
+            axes[row, column].set_ylabel("frequency [Hz]")
+    for column, name in enumerate(representations, start=1):
+        axes[0, column].set_title(name, loc="left")
+        figure.colorbar(meshes[name], ax=axes[:, column], shrink=0.9, pad=0.02)
+    axes[0, 0].set_title("waveform (analysis window, resampled)", loc="left")
+    for column in range(3):
+        axes[-1, column].set_xlabel("time from window start [s]")
+    figure.suptitle(title, x=0.01, ha="left")
+    return figure
+
+
+def plot_value_distributions(
+    values_by_name: Mapping[str, np.ndarray],
+    ax: Axes,
+    x_label: str,
+    n_bins: int = 100,
+    quantile_range: tuple[float, float] = (0.0, 1.0),
+    x_limits: tuple[float, float] | None = None,
+) -> Axes:
+    """Normalized histograms of several sets of values on a common set of bins.
+
+    Args:
+        values_by_name: Mapping from name to values (non-finite values are ignored).
+        ax: Axes to draw on.
+        x_label: Label of the x axis.
+        n_bins: Number of bins.
+        quantile_range: The x range spans these quantiles of the pooled values,
+            so that a few extreme values do not hide the bulk of the distribution.
+        x_limits: Explicit x range; when given, ``quantile_range`` is ignored.
+
+    Returns:
+        The Axes.
+    """
+    if len(values_by_name) > len(GROUP_COLORS):
+        raise ValueError(f"At most {len(GROUP_COLORS)} sets can be drawn.")
+    finite = {name: values[np.isfinite(values)] for name, values in values_by_name.items()}
+    pooled = np.concatenate(list(finite.values()))
+    if x_limits is None:
+        low, high = (float(value) for value in np.quantile(pooled, quantile_range))
+    else:
+        low, high = x_limits
+    edges = np.linspace(low, high, n_bins + 1)
+    for color, (name, values) in zip(GROUP_COLORS, finite.items()):
+        ax.hist(values, bins=edges, density=True, histtype="step", linewidth=LINE_WIDTH, color=color, label=name)
+    ax.set_xlabel(x_label)
+    ax.set_ylabel("density")
+    ax.legend()
+    return ax
+
+
+WINDOW_MARKER_STYLES: Mapping[str, str] = {"suggested": "-", "configured": "--"}
+REJECTED_HATCH = "///"
+WINDOW_LENGTH_COLORMAP = "Blues"
+
+
+def _grid_position(values: np.ndarray, value: float) -> int:
+    """Position of a value in a sorted axis of the window grid.
+
+    Args:
+        values: Axis values.
+        value: Value to locate.
+
+    Returns:
+        Position in ``values``.
+
+    Raises:
+        KeyError: If the value is not on the axis.
+    """
+    matches = np.flatnonzero(np.isclose(values, value))
+    if matches.size == 0:
+        raise KeyError(f"Value {value} is not on the grid axis {values.tolist()}.")
+    return int(matches[0])
+
+
+def plot_window_grid_heatmap(
+    summary: pd.DataFrame,
+    value_column: str,
+    ax: Axes,
+    title: str,
+    colormap: str,
+    value_format: str,
+    marked_windows: Mapping[str, tuple[float, float]],
+) -> Axes:
+    """Heatmap of a window-search measure over (pre_anchor_s, post_anchor_s).
+
+    Rejected windows (``accepted`` false) are hatched; the windows in
+    ``marked_windows`` are outlined (solid for ``suggested``, dashed otherwise).
+
+    Args:
+        summary: Output of ``summarize_window_grid``.
+        value_column: Column to show.
+        ax: Axes to draw on.
+        title: Axes title.
+        colormap: Matplotlib colormap name.
+        value_format: Format of the cell annotations (e.g. ``.3f``).
+        marked_windows: Mapping from a name to (pre_anchor_s, post_anchor_s).
+
+    Returns:
+        The Axes.
+    """
+    table = summary.pivot(index="pre_anchor_s", columns="post_anchor_s", values=value_column)
+    accepted = summary.pivot(index="pre_anchor_s", columns="post_anchor_s", values="accepted").astype(bool)
+    pre_values, post_values = table.index.to_numpy(), table.columns.to_numpy()
+    image = ax.imshow(table.to_numpy(), cmap=colormap, aspect="auto", origin="lower")
+    ax.figure.colorbar(image, ax=ax, label=value_column)
+    values = table.to_numpy()
+    threshold = np.nanmean(values)
+    for row in range(len(pre_values)):
+        for column in range(len(post_values)):
+            ax.text(column, row, format(values[row, column], value_format), ha="center", va="center", fontsize=7,
+                    color="white" if values[row, column] > threshold else WINDOW_TRACE_COLOR)
+            if not accepted.iloc[row, column]:
+                ax.add_patch(plt.Rectangle((column - 0.5, row - 0.5), 1, 1, fill=False, hatch=REJECTED_HATCH,
+                                           edgecolor=REFERENCE_LINE_COLOR, linewidth=0))
+    for name, (pre, post) in marked_windows.items():
+        if np.isclose(pre_values, pre).any() and np.isclose(post_values, post).any():
+            ax.add_patch(plt.Rectangle(
+                (_grid_position(post_values, post) - 0.5, _grid_position(pre_values, pre) - 0.5), 1, 1, fill=False,
+                edgecolor="black", linewidth=2.0, linestyle=WINDOW_MARKER_STYLES.get(name, ":"), label=name,
+            ))
+    ax.set_xticks(range(len(post_values)), [f"{value:g}" for value in post_values])
+    ax.set_yticks(range(len(pre_values)), [f"{value:g}" for value in pre_values])
+    ax.set_xlabel("post_anchor_s [s]")
+    ax.set_ylabel("pre_anchor_s [s]")
+    ax.set_title(title, loc="left")
+    ax.grid(False)
+    return ax
+
+
+def plot_window_tradeoff(
+    summary: pd.DataFrame,
+    pareto: pd.Series,
+    max_padding_separation: float,
+    marked_windows: Mapping[str, tuple[float, float]],
+    ax: Axes,
+) -> Axes:
+    """Padding separation against energy score for every candidate window.
+
+    Points are coloured by window length; the Pareto front is joined by a line,
+    the dashed vertical line is the accepted padding separation, and the windows
+    in ``marked_windows`` are circled and labelled.
+
+    Args:
+        summary: Output of ``summarize_window_grid``.
+        pareto: Boolean Series marking the Pareto front (see ``pareto_front``).
+        max_padding_separation: Accepted padding separation.
+        marked_windows: Mapping from a name to (pre_anchor_s, post_anchor_s).
+        ax: Axes to draw on.
+
+    Returns:
+        The Axes.
+    """
+    points = ax.scatter(summary["padding_separation"], summary["energy_score"], c=summary["window_length_s"],
+                        cmap=WINDOW_LENGTH_COLORMAP, edgecolors=NEUTRAL_COLOR, linewidths=0.5, s=40)
+    ax.figure.colorbar(points, ax=ax, label="window length [s]")
+    front = summary[pareto].sort_values("padding_separation")
+    (front_line,) = ax.plot(front["padding_separation"], front["energy_score"], color=NEUTRAL_COLOR, linewidth=1.0,
+                            label="Pareto front")
+    threshold_line = ax.axvline(max_padding_separation, color=REFERENCE_LINE_COLOR, linestyle="--", linewidth=1.0,
+                                label="max_padding_separation")
+    for name, (pre, post) in marked_windows.items():
+        match = summary[np.isclose(summary["pre_anchor_s"], pre) & np.isclose(summary["post_anchor_s"], post)]
+        if match.empty:
+            continue
+        row = match.iloc[0]
+        ax.scatter(row["padding_separation"], row["energy_score"], s=160, facecolors="none", edgecolors="black",
+                   linewidths=1.5, linestyle=WINDOW_MARKER_STYLES.get(name, ":"))
+        ax.annotate(f"{name} ({pre:g}, {post:g})", (row["padding_separation"], row["energy_score"]),
+                    xytext=(8, -12), textcoords="offset points", fontsize=8)
+    ax.set_xlabel("padding separation (max of AUC, 1 - AUC)")
+    ax.set_ylabel("energy score")
+    ax.legend(handles=[front_line, threshold_line], loc="best")
+    return ax
+
+
+# Anchor colors: the PGA (reference) in neutral, the other methods in the group colors.
+ANCHOR_COLORS: Mapping[str, str] = {
+    "pga": NEUTRAL_COLOR,
+    "envelope": GROUP_COLORS[0],
+    "arias": GROUP_COLORS[1],
+    "theoretical": GROUP_COLORS[2],
+    "hybrid": GROUP_COLORS[3],
+}
+
+
+def plot_anchor_comparison(
+    trace: np.ndarray,
+    sampling_rate_hz: float,
+    anchors_s: Mapping[str, float],
+    envelope: np.ndarray,
+    components: Sequence[str],
+    title: str,
+) -> Figure:
+    """Plot each component, the energy envelope and the anchor of every method.
+
+    Args:
+        trace: Stored trace, shape (components, samples).
+        sampling_rate_hz: Sampling rate of the trace.
+        anchors_s: Mapping from method to anchor time in seconds (NaN when undetermined).
+        envelope: Energy envelope of the record, shape (samples,).
+        components: Component names (one per row).
+        title: Figure title.
+
+    Returns:
+        The Figure.
+    """
+    time_s = np.arange(trace.shape[-1]) / sampling_rate_hz
+    n_rows = len(components) + 1
+    figure, axes = plt.subplots(n_rows, 1, figsize=(10, 1.6 * n_rows), sharex=True)
+    for ax, component, values in zip(axes[:-1], components, trace):
+        ax.plot(time_s, values, color=WINDOW_TRACE_COLOR, linewidth=0.5)
+        ax.set_ylabel(f"acceleration {component}")
+    axes[-1].plot(time_s, envelope, color=WINDOW_TRACE_COLOR, linewidth=0.8)
+    axes[-1].set_ylabel("energy envelope")
+    for method, anchor in anchors_s.items():
+        if np.isnan(anchor):
+            continue
+        for ax in axes:
+            ax.axvline(anchor, color=ANCHOR_COLORS[method], linewidth=1.5,
+                       linestyle="--" if method == "pga" else "-", label=method)
+    handles, labels = axes[0].get_legend_handles_labels()
+    axes[0].legend(handles, labels, loc="upper right", ncol=len(labels), fontsize=8)
+    axes[-1].set_xlim(time_s[0], time_s[-1])
+    axes[-1].set_xlabel("time from trace start [s]")
+    figure.suptitle(title, x=0.01, ha="left")
+    figure.tight_layout()
+    return figure
+
+
+def plot_anchor_windows(
+    trace: np.ndarray,
+    sampling_rate_hz: float,
+    anchors_s: Mapping[str, float],
+    pre_s: float,
+    post_s: float,
+    components: Sequence[str],
+    title: str,
+) -> Figure:
+    """Plot the components of a record and, below, the window placed by each anchoring method.
+
+    The bottom panel has one horizontal bar per method, from ``pre_s`` before to
+    ``post_s`` after its anchor (marked by a black tick); methods without an anchor
+    are labelled as not found. All panels share the time axis, which is extended
+    when a window reaches beyond the stored trace.
+
+    Args:
+        trace: Stored trace, shape (components, samples).
+        sampling_rate_hz: Sampling rate of the trace.
+        anchors_s: Mapping from method to anchor time in seconds (NaN when undetermined).
+        pre_s: Window length before the anchor.
+        post_s: Window length after the anchor.
+        components: Component names (one per row).
+        title: Figure title.
+
+    Returns:
+        The Figure.
+    """
+    time_s = np.arange(trace.shape[-1]) / sampling_rate_hz
+    methods = list(anchors_s)
+    found = [anchor for anchor in anchors_s.values() if not np.isnan(anchor)]
+    x_min = min([0.0, *(anchor - pre_s for anchor in found)])
+    x_max = max([float(time_s[-1]), *(anchor + post_s for anchor in found)])
+    figure, axes = plt.subplots(
+        len(components) + 1, 1, figsize=(10, 1.4 * len(components) + 0.35 * len(methods) + 0.8), sharex=True,
+        gridspec_kw={"height_ratios": [1.0] * len(components) + [0.3 * len(methods)]},
+    )
+    for ax, component, values in zip(axes[:-1], components, trace):
+        ax.plot(time_s, values, color=WINDOW_TRACE_COLOR, linewidth=0.5)
+        ax.set_ylabel(component)
+    strip = axes[-1]
+    for position, method in enumerate(methods):
+        anchor = anchors_s[method]
+        if np.isnan(anchor):
+            strip.text(x_min + 0.01 * (x_max - x_min), position, "not found", va="center", fontsize=8,
+                       color=ANCHOR_COLORS[method])
+            continue
+        strip.barh(position, pre_s + post_s, left=anchor - pre_s, height=0.6, color=ANCHOR_COLORS[method], alpha=0.6)
+        strip.plot([anchor, anchor], [position - 0.35, position + 0.35], color="black", linewidth=1.2)
+    strip.set_yticks(range(len(methods)), methods)
+    strip.set_ylim(len(methods) - 0.5, -0.5)
+    strip.grid(axis="y", visible=False)
+    strip.set_xlim(x_min, x_max)
+    strip.set_xlabel(f"time from trace start [s] (bars: windows from {pre_s:g} s before to {post_s:g} s after the anchor)")
+    figure.suptitle(title, x=0.01, ha="left")
+    figure.tight_layout()
+    return figure
+
+
+def save_figures_pdf(figures: Iterable[Figure], path: Path) -> Path:
+    """Save figures as the pages of one PDF file, closing each after saving.
+
+    Args:
+        figures: Figures to save (may be a generator, so that they are built one at a time).
+        path: Output PDF file.
+
+    Returns:
+        The output path.
+    """
+    path.parent.mkdir(parents=True, exist_ok=True)
+    with PdfPages(path) as pdf:
+        for figure in figures:
+            pdf.savefig(figure, bbox_inches="tight")
+            plt.close(figure)
+    return path
+
+
+GRAD_CAM_CLASS_LABELS: Mapping[str, int] = {"good": 0, "bad": 1}
+GRAD_CAM_MAP_COLORMAPS: Mapping[str, str] = {"good": "Blues", "bad": "Oranges"}
+GRAD_CAM_STD_COLORMAP = "Greys"
+GRAD_CAM_BACKGROUND_COLORMAP = "Greys"
+GRAD_CAM_CONTOUR_FRACTIONS: tuple[float, ...] = (0.5, 0.8)
+
+
+def _draw_frequency_time_map(
+    values: np.ndarray, frequency_edges_hz: np.ndarray, times_s: np.ndarray, ax: Axes, colormap: str, title: str
+) -> None:
+    """Draw a frequency-time map with a logarithmic frequency axis and a colour bar.
+
+    Args:
+        values: Array of shape (frequencies, times).
+        frequency_edges_hz: Band edges (frequencies + 1 values).
+        times_s: Time-bin centres (equally spaced).
+        ax: Axes to draw on.
+        colormap: Matplotlib colormap name.
+        title: Axes title.
+    """
+    step = times_s[1] - times_s[0]
+    time_edges = np.concatenate((times_s - step / 2, [times_s[-1] + step / 2]))
+    mesh = ax.pcolormesh(time_edges, frequency_edges_hz, values, cmap=colormap, shading="flat", rasterized=True)
+    ax.figure.colorbar(mesh, ax=ax)
+    ax.set_yscale("log")
+    ax.grid(visible=False)
+    ax.set_title(title, loc="left", fontsize=9)
+
+
+def plot_grad_cam(
+    image_db: np.ndarray,
+    frequencies_hz: np.ndarray,
+    frequency_edges_hz: np.ndarray,
+    times_s: np.ndarray,
+    maps: Mapping[str, tuple[np.ndarray, np.ndarray]],
+    window_waveform: np.ndarray,
+    waveform_rate_hz: float,
+    components: Sequence[str],
+    title: str,
+) -> Figure:
+    """Grad-CAM maps of both classes over the time-frequency image and the waveform of a record.
+
+    Top: input image (mean over components, grey) with contours of the mean map of each
+    class at ``GRAD_CAM_CONTOUR_FRACTIONS`` of its maximum. Middle: mean and MC dropout
+    standard deviation of the map of each class. Bottom: waveform of the window with the
+    mean over frequencies of each mean map (right axis).
+
+    Args:
+        image_db: Input representation in decibels, shape (components, frequencies, times).
+        frequencies_hz: Centre frequencies of the grid.
+        frequency_edges_hz: Band edges of the grid.
+        times_s: Time-bin centres of the grid (seconds from the window start).
+        maps: Mapping from class name (``good``, ``bad``) to (mean map, std map), each (frequencies, times).
+        window_waveform: Waveform of the window, shape (components, samples).
+        waveform_rate_hz: Sampling rate of the waveform.
+        components: Component names.
+        title: Figure title.
+
+    Returns:
+        The Figure.
+    """
+    figure = plt.figure(figsize=(12, 10), constrained_layout=True)
+    layout = figure.add_gridspec(3, 2 * len(maps), height_ratios=[1.2, 1.0, 1.0])
+    top = figure.add_subplot(layout[0, :])
+    _draw_frequency_time_map(image_db.mean(axis=0), frequency_edges_hz, times_s, top, GRAD_CAM_BACKGROUND_COLORMAP,
+                             "input (mean over components, dB) with Grad-CAM contours")
+    handles = []
+    for class_name, (mean_map, _) in maps.items():
+        color = LABEL_COLORS[GRAD_CAM_CLASS_LABELS[class_name]]
+        levels = [fraction * float(mean_map.max()) for fraction in GRAD_CAM_CONTOUR_FRACTIONS]
+        if levels[-1] > 0:
+            top.contour(times_s, frequencies_hz, mean_map, levels=levels, colors=color, linewidths=1.2)
+        handles.append(plt.Line2D([], [], color=color, label=f"{class_name} map"))
+    top.legend(handles=handles, loc="upper right", fontsize=8)
+    top.set_ylabel("frequency [Hz]")
+    for position, (class_name, (mean_map, std_map)) in enumerate(maps.items()):
+        mean_ax = figure.add_subplot(layout[1, 2 * position])
+        std_ax = figure.add_subplot(layout[1, 2 * position + 1])
+        _draw_frequency_time_map(mean_map, frequency_edges_hz, times_s, mean_ax, GRAD_CAM_MAP_COLORMAPS[class_name],
+                                 f"{class_name}: MC mean")
+        _draw_frequency_time_map(std_map, frequency_edges_hz, times_s, std_ax, GRAD_CAM_STD_COLORMAP,
+                                 f"{class_name}: MC std")
+    bottom = figure.add_subplot(layout[2, :])
+    waveform_time_s = np.arange(window_waveform.shape[-1]) / waveform_rate_hz
+    offset = 2.5 * float(np.max(np.abs(window_waveform))) or 1.0
+    for position, (component, values) in enumerate(zip(components, window_waveform)):
+        bottom.plot(waveform_time_s, values - position * offset, color=WINDOW_TRACE_COLOR, linewidth=0.5)
+    bottom.set_yticks([-position * offset for position in range(len(components))], list(components))
+    bottom.set_xlim(waveform_time_s[0], waveform_time_s[-1])
+    bottom.set_xlabel("time from window start [s]")
+    profile_ax = bottom.twinx()
+    for class_name, (mean_map, _) in maps.items():
+        profile_ax.plot(times_s, mean_map.mean(axis=0), color=LABEL_COLORS[GRAD_CAM_CLASS_LABELS[class_name]],
+                        linewidth=LINE_WIDTH, label=f"{class_name} map (mean over frequencies)")
+    profile_ax.set_ylabel("Grad-CAM")
+    profile_ax.grid(visible=False)
+    profile_ax.legend(loc="upper right", fontsize=8)
+    figure.suptitle(title, x=0.01, ha="left")
+    return figure
+
+
+TRAINING_SET_COLORS: Mapping[str, str] = {"train": NEUTRAL_COLOR, "validation": GROUP_COLORS[0]}
+TRAINING_METRIC_LABELS: Mapping[str, str] = {
+    "loss": "weighted BCE loss",
+    "auc": "ROC AUC",
+    "balanced_accuracy": "balanced accuracy",
+    "ece": "ECE (prior-corrected)",
+}
+
+
+def plot_training_curve(history: pd.DataFrame, metric: str, best_epoch: int, ax: Axes) -> Axes:
+    """Training and validation values of one metric per epoch, with the best epoch marked.
+
+    Args:
+        history: Training history with ``epoch``, ``train_<metric>`` and ``validation_<metric>``.
+        metric: Metric name (a key of ``TRAINING_METRIC_LABELS``).
+        best_epoch: Epoch of the saved model (vertical line).
+        ax: Axes to draw on.
+
+    Returns:
+        The Axes.
+    """
+    for set_name, color in TRAINING_SET_COLORS.items():
+        ax.plot(history["epoch"], history[f"{set_name}_{metric}"], color=color, linewidth=LINE_WIDTH,
+                marker="o", markersize=3, label=set_name)
+    ax.axvline(best_epoch, color=REFERENCE_LINE_COLOR, linestyle="--", linewidth=1.0, label=f"best epoch ({best_epoch})")
+    ax.set_xlabel("epoch")
+    ax.xaxis.set_major_locator(MaxNLocator(integer=True))
+    ax.set_ylabel(TRAINING_METRIC_LABELS[metric])
+    ax.legend(fontsize=8)
+    return ax
+
+
+def plot_learning_rate(history: pd.DataFrame, best_epoch: int, ax: Axes) -> Axes:
+    """Learning rate used at every epoch (logarithmic axis).
+
+    Args:
+        history: Training history with ``epoch`` and ``learning_rate``.
+        best_epoch: Epoch of the saved model (vertical line).
+        ax: Axes to draw on.
+
+    Returns:
+        The Axes.
+    """
+    ax.plot(history["epoch"], history["learning_rate"], drawstyle="steps-post", color=NEUTRAL_COLOR,
+            linewidth=LINE_WIDTH, marker="o", markersize=3)
+    ax.axvline(best_epoch, color=REFERENCE_LINE_COLOR, linestyle="--", linewidth=1.0)
+    ax.set_yscale("log")
+    ax.set_xlabel("epoch")
+    ax.xaxis.set_major_locator(MaxNLocator(integer=True))
+    ax.set_ylabel("learning rate")
+    return ax
+
+
+def plot_training_history(history: pd.DataFrame, best_epoch: int, title: str) -> Figure:
+    """Overview of a training run: loss and learning rate on top, AUC, balanced accuracy and ECE below.
+
+    The training values come from the passes made while training (dropout active,
+    weights changing during the epoch); the validation values from a deterministic
+    pass at the end of the epoch.
+
+    Args:
+        history: Output of ``fit`` (or ``history.csv`` of a run).
+        best_epoch: Epoch of the saved model.
+        title: Figure title.
+
+    Returns:
+        The Figure.
+    """
+    figure = plt.figure(figsize=(13, 7.5), constrained_layout=True)
+    layout = figure.add_gridspec(2, 3)
+    plot_training_curve(history, "loss", best_epoch, figure.add_subplot(layout[0, :2]))
+    plot_learning_rate(history, best_epoch, figure.add_subplot(layout[0, 2]))
+    for position, metric in enumerate(("auc", "balanced_accuracy", "ece")):
+        plot_training_curve(history, metric, best_epoch, figure.add_subplot(layout[1, position]))
+    figure.suptitle(title, x=0.01, ha="left")
+    return figure
+
+
+RELIABILITY_COLORS: Mapping[str, str] = {"deterministic": NEUTRAL_COLOR, "mc_dropout": GROUP_COLORS[0]}
+# The deterministic baseline is neutral; the MC dropout measures take the categorical colors.
+UNCERTAINTY_MEASURE_COLORS: Mapping[str, str] = {
+    "deterministic_entropy": NEUTRAL_COLOR,
+    "predictive_entropy": GROUP_COLORS[0],
+    "probability_std": GROUP_COLORS[1],
+    "mutual_information": GROUP_COLORS[2],
+}
+REJECTION_BASELINE_STYLES: Mapping[str, Mapping[str, str]] = {
+    "random": {"color": REFERENCE_LINE_COLOR, "linestyle": "--"},
+    "oracle": {"color": WINDOW_TRACE_COLOR, "linestyle": ":"},
+}
+
+
+def plot_reliability_diagram(tables: Mapping[str, pd.DataFrame], ece: Mapping[str, float], title: str) -> Figure:
+    """Reliability diagram (observed bad rate against mean predicted probability) with bin counts below.
+
+    Args:
+        tables: Mapping from prediction name (keys of ``RELIABILITY_COLORS``) to the output of
+            ``reliability_table``.
+        ece: Expected calibration error of each prediction (shown in the legend).
+        title: Figure title.
+
+    Returns:
+        The Figure.
+    """
+    figure, (diagram, counts) = plt.subplots(
+        2, 1, figsize=(6.5, 7), sharex=True, gridspec_kw={"height_ratios": [3, 1]}, constrained_layout=True
+    )
+    diagram.plot([0, 1], [0, 1], color=REFERENCE_LINE_COLOR, linestyle="--", linewidth=1.0, label="perfect calibration")
+    bin_width = float(next(iter(tables.values()))["bin_upper"].iloc[0])
+    offsets = np.linspace(-0.2, 0.2, len(tables)) * bin_width
+    for offset, (name, table) in zip(offsets, tables.items()):
+        filled = table[table["records"] > 0]
+        color = RELIABILITY_COLORS[name]
+        diagram.plot(filled["mean_probability"], filled["observed_bad_rate"], color=color, linewidth=LINE_WIDTH,
+                     marker="o", markersize=4, label=f"{name.replace('_', ' ')} (ECE {ece[name]:.3f})")
+        centres = (table["bin_lower"] + table["bin_upper"]) / 2
+        counts.bar(centres + offset, table["records"], width=bin_width / (len(tables) + 1), color=color)
+    diagram.set_xlim(0, 1)
+    diagram.set_ylim(0, 1)
+    diagram.set_ylabel("observed share of bad records")
+    diagram.legend(fontsize=8, loc="upper left")
+    counts.set_xlabel("predicted probability of bad (prior-corrected)")
+    counts.set_ylabel("records")
+    figure.suptitle(title, x=0.01, ha="left")
+    return figure
+
+
+def plot_error_by_uncertainty(tables: Mapping[str, pd.DataFrame], overall_error: float, ax: Axes) -> Axes:
+    """Error rate in groups of increasing uncertainty, one line per uncertainty measure.
+
+    Args:
+        tables: Mapping from measure to the output of ``error_by_uncertainty``.
+        overall_error: Error rate of the MC dropout mean prediction over all records (reference line).
+        ax: Axes to draw on.
+
+    Returns:
+        The Axes.
+    """
+    for measure, table in tables.items():
+        ax.plot(table.index, table["error_rate"], color=UNCERTAINTY_MEASURE_COLORS[measure], linewidth=LINE_WIDTH, marker="o", markersize=4,
+                label=measure.replace("_", " "))
+    ax.axhline(overall_error, color=REFERENCE_LINE_COLOR, linestyle="--", linewidth=1.0,
+               label="overall error rate (MC mean)")
+    ax.xaxis.set_major_locator(MaxNLocator(integer=True))
+    ax.set_xlabel("uncertainty group (1 = least uncertain)")
+    ax.set_ylabel("error rate")
+    ax.set_ylim(bottom=0)
+    ax.legend(fontsize=8)
+    return ax
+
+
+def plot_rejection_curves(curves: pd.DataFrame, metric: str, ax: Axes) -> Axes:
+    """Metric on the retained records against the retained fraction.
+
+    Args:
+        curves: Output of ``rejection_curves``.
+        metric: ``accuracy`` or ``balanced_accuracy``.
+        ax: Axes to draw on.
+
+    Returns:
+        The Axes.
+    """
+    measures = [method for method in curves["method"].unique() if method not in REJECTION_BASELINE_STYLES]
+    for measure in measures:
+        curve = curves[curves["method"] == measure]
+        ax.plot(curve["retained_fraction"], curve[metric], color=UNCERTAINTY_MEASURE_COLORS[measure], linewidth=LINE_WIDTH,
+                label=measure.replace("_", " "))
+    for method, style in REJECTION_BASELINE_STYLES.items():
+        curve = curves[curves["method"] == method]
+        ax.plot(curve["retained_fraction"], curve[metric], linewidth=1.5, label=method, **style)
+    ax.set_xlim(1.0, curves["retained_fraction"].min())
+    ax.set_xlabel("fraction of records kept (most uncertain discarded first)")
+    ax.set_ylabel(metric.replace("_", " ") + " on kept records")
+    ax.legend(fontsize=8)
+    return ax
+
+
+# Categories of the Grad-CAM analysis: colour by correctness and uncertainty level,
+# line style by true class.
+CATEGORY_COLORS: Mapping[tuple[str, str], str] = {
+    ("wrong", "low"): GROUP_COLORS[2],
+    ("wrong", "middle"): OUTSIDE_TRACE_COLOR,
+    ("wrong", "high"): GROUP_COLORS[1],
+    ("right", "low"): GROUP_COLORS[0],
+    ("right", "middle"): REFERENCE_LINE_COLOR,
+    ("right", "high"): GROUP_COLORS[3],
+}
+TRUE_CLASS_LINE_STYLES: Mapping[str, str] = {"good": "-", "bad": "--"}
+CATEGORY_MAP_COLORMAP = "magma"
+
+
+def _category_parts(category: str) -> tuple[str, str, str]:
+    """Split a category name ``correctness-level-class`` into its parts."""
+    correctness, level, true_class = category.split("-")
+    return correctness, level, true_class
+
+
+def plot_category_mean_maps(
+    mean_maps: Mapping[str, np.ndarray],
+    counts: Mapping[str, int],
+    categories: Sequence[str],
+    frequency_edges_hz: np.ndarray,
+    times_s: np.ndarray,
+    anchor_s: float | None,
+    title: str,
+    color_percentile: float,
+) -> Figure:
+    """Mean normalized Grad-CAM map of each category, on a common colour scale.
+
+    Rows: correctness and uncertainty level; columns: true class (good, bad). The dashed
+    line marks the anchor when its position is the same in every window. The top of the
+    colour scale is a percentile of the values of all the maps drawn; the pixels above it are
+    drawn saturated (the colour bar is extended). The maps are rasterized in vector outputs.
+
+    Args:
+        mean_maps: Mapping from category to mean map, shape (frequencies, times).
+        counts: Records per category.
+        categories: Categories to draw (missing ones are left blank).
+        frequency_edges_hz: Band edges of the grid.
+        times_s: Time-bin centres (seconds from the window start).
+        anchor_s: Seconds from the window start to the anchor, or None to draw no line.
+        title: Figure title.
+        color_percentile: Percentile of the map values used as the top of the colour scale (100 = maximum).
+
+    Returns:
+        The Figure.
+    """
+    rows = list(dict.fromkeys(name.rsplit("-", 1)[0] for name in categories))
+    columns = list(dict.fromkeys(_category_parts(name)[2] for name in categories))
+    figure, axes = plt.subplots(len(rows), len(columns), figsize=(5.5 * len(columns), 2.6 * len(rows)),
+                                sharex=True, sharey=True, constrained_layout=True, squeeze=False)
+    available = [mean_maps[name] for name in categories if name in mean_maps]
+    all_values = np.concatenate([values.ravel() for values in available]) if available else np.ones(1)
+    vmax = float(np.percentile(all_values, color_percentile))
+    saturated = bool(all_values.max() > vmax)
+    time_edges = np.concatenate((times_s - (times_s[1] - times_s[0]) / 2, [times_s[-1] + (times_s[1] - times_s[0]) / 2]))
+    mesh = None
+    for row, prefix in enumerate(rows):
+        for column, true_class in enumerate(columns):
+            ax = axes[row, column]
+            name = f"{prefix}-{true_class}"
+            ax.set_yscale("log")
+            ax.grid(visible=False)
+            if name not in mean_maps:
+                ax.set_title(f"{name}: no records", loc="left", fontsize=9)
+                continue
+            mesh = ax.pcolormesh(time_edges, frequency_edges_hz, mean_maps[name], cmap=CATEGORY_MAP_COLORMAP,
+                                 vmin=0.0, vmax=vmax, shading="flat", rasterized=True)
+            if anchor_s is not None:
+                ax.axvline(anchor_s, color="white", linestyle="--", linewidth=1.0)
+            ax.set_title(f"{name} ({counts.get(name, 0)} records)", loc="left", fontsize=9)
+    for ax in axes[-1, :]:
+        ax.set_xlabel("time from window start (s)")
+    for ax in axes[:, 0]:
+        ax.set_ylabel("frequency (Hz)")
+    if mesh is not None:
+        figure.colorbar(mesh, ax=axes, label="mean share of the map per pixel", extend="max" if saturated else "neither")
+    figure.suptitle(title, x=0.01, ha="left")
+    return figure
+
+
+def plot_category_profiles(
+    profiles: pd.DataFrame, x_values: np.ndarray, x_label: str, log_x: bool, ax: Axes, reference_line: float | None = None
+) -> Axes:
+    """Mean Grad-CAM profile (over time or frequency) of each category.
+
+    Args:
+        profiles: Output of ``mean_profiles_by_category`` (categories as rows).
+        x_values: Bin centres (times or frequencies).
+        x_label: Label of the x axis.
+        log_x: Logarithmic x axis.
+        ax: Axes to draw on.
+        reference_line: Optional x position of a vertical dashed line (e.g. the anchor).
+
+    Returns:
+        The Axes.
+    """
+    for category, values in profiles.iterrows():
+        correctness, level, true_class = _category_parts(category)
+        ax.plot(x_values, values.to_numpy(), color=CATEGORY_COLORS[(correctness, level)],
+                linestyle=TRUE_CLASS_LINE_STYLES[true_class], linewidth=1.6, label=category)
+    if reference_line is not None:
+        ax.axvline(reference_line, color=REFERENCE_LINE_COLOR, linestyle=":", linewidth=1.0)
+    if log_x:
+        ax.set_xscale("log")
+    ax.set_xlabel(x_label)
+    ax.set_ylabel("mean share of the map")
+    ax.legend(fontsize=7, ncol=2)
+    return ax
+
+
+POOLED_HIGH_PROFILE_GROUP = "high"
+CORRECTNESS_LINE_STYLES: Mapping[str, str] = {"right": "-", "wrong": "--"}
+STANDARD_ERROR_ALPHA = 0.2
+PROFILE_LINE_WIDTH = 1.6
+
+
+def _profile_group_style(group: str) -> tuple[str, str]:
+    """Color and line style of a profile group (``<correctness>-<level>`` or the pooled ``high``)."""
+    if group == POOLED_HIGH_PROFILE_GROUP:
+        return NEUTRAL_COLOR, "-"
+    correctness, level = group.split("-")
+    return CATEGORY_COLORS[(correctness, level)], CORRECTNESS_LINE_STYLES[correctness]
+
+
+def _profile_group_label(group: str, count: int) -> str:
+    """Legend label of a profile group, with its number of records."""
+    if group == POOLED_HIGH_PROFILE_GROUP:
+        return f"high uncertainty ({count:,})"
+    correctness, level = group.split("-")
+    return f"{correctness}, {level} uncertainty ({count:,})"
+
+
+def plot_profile_statistics(
+    statistics: ProfileStatistics, x_values: np.ndarray, x_label: str, log_x: bool, ax: Axes
+) -> Axes:
+    """Mean Grad-CAM profiles of groups of records, with a band of one standard error.
+
+    A dotted line marks the value of a uniform profile (one over the number of bins).
+
+    Args:
+        statistics: Output of ``wqu.evaluation.explanations.profile_statistics``.
+        x_values: Bin centres (times or frequencies).
+        x_label: Label of the x axis.
+        log_x: Logarithmic x axis.
+        ax: Axes to draw on.
+
+    Returns:
+        The Axes.
+    """
+    for group, mean in statistics.mean.iterrows():
+        color, line_style = _profile_group_style(group)
+        values = mean.to_numpy()
+        error = statistics.standard_error.loc[group].to_numpy()
+        ax.plot(x_values, values, color=color, linestyle=line_style, linewidth=PROFILE_LINE_WIDTH,
+                label=_profile_group_label(group, int(statistics.counts[group])))
+        if np.isfinite(error).all():
+            ax.fill_between(x_values, values - error, values + error, color=color, alpha=STANDARD_ERROR_ALPHA,
+                            linewidth=0)
+    ax.axhline(1.0 / statistics.mean.shape[1], color=REFERENCE_LINE_COLOR, linestyle=":", linewidth=1.0,
+               label="uniform")
+    if log_x:
+        ax.set_xscale("log")
+    ax.set_xlabel(x_label)
+    ax.legend(fontsize=7)
+    return ax
+
+
+def plot_profiles_by_predicted_class(
+    time_statistics: Mapping[str, ProfileStatistics],
+    frequency_statistics: Mapping[str, ProfileStatistics],
+    times_s: np.ndarray,
+    frequencies_hz: np.ndarray,
+    title: str,
+) -> Figure:
+    """Mean Grad-CAM profiles over time and frequency, one column per predicted class.
+
+    Args:
+        time_statistics: Mapping from predicted class to the statistics of the time profiles
+            (``wqu.evaluation.explanations.profiles_by_predicted_class``).
+        frequency_statistics: The same for the frequency profiles.
+        times_s: Time-bin centres.
+        frequencies_hz: Frequency-bin centres.
+        title: Figure title.
+
+    Returns:
+        The Figure (rows: time, frequency; columns: predicted classes, in the order of the mappings).
+    """
+    classes = list(time_statistics)
+    figure, axes = plt.subplots(2, len(classes), figsize=(7.5 * len(classes), 9), sharey="row",
+                                constrained_layout=True, squeeze=False)
+    for column, name in enumerate(classes):
+        plot_profile_statistics(time_statistics[name], times_s, "time from window start (s)", False, axes[0, column])
+        plot_profile_statistics(frequency_statistics[name], frequencies_hz, "frequency (Hz)", True, axes[1, column])
+        axes[0, column].set_title(f"predicted {name}", loc="left")
+    for row in axes:
+        row[0].set_ylabel("mean share of the map")
+    figure.suptitle(title, x=0.01, ha="left")
+    return figure
+
+
+AUC_COLORMAP = "Greens"
+AUC_COLOR_RANGE: tuple[float, float] = (0.5, 1.0)
+AUC_TEXT_SWITCH = 0.85
+CLASS_NAMES_BY_LABEL: Mapping[int, str] = {0: "good", 1: "bad"}
+
+
+def plot_auc_grid(auc: pd.DataFrame, counts: pd.DataFrame, row_label: str, column_label: str, ax: Axes) -> Axes:
+    """AUC in every cell of a two-way stratification, with the number of records.
+
+    Args:
+        auc: AUC table (rows and columns are strata; NaN where too few records).
+        counts: Records in every cell, same shape as ``auc``.
+        row_label: Name of the row variable.
+        column_label: Name of the column variable.
+        ax: Axes to draw on.
+
+    Returns:
+        The Axes.
+    """
+    image = ax.imshow(auc.to_numpy(dtype=float), cmap=AUC_COLORMAP, vmin=AUC_COLOR_RANGE[0], vmax=AUC_COLOR_RANGE[1],
+                      aspect="auto")
+    for row in range(auc.shape[0]):
+        for column in range(auc.shape[1]):
+            value, count = auc.iat[row, column], int(counts.iat[row, column])
+            text = f"{value:.2f}\n({count:,})" if np.isfinite(value) else (f"({count:,})" if count else "")
+            color = "white" if np.isfinite(value) and value > AUC_TEXT_SWITCH else WINDOW_TRACE_COLOR
+            ax.text(column, row, text, ha="center", va="center", fontsize=7, color=color)
+    ax.set_xticks(range(auc.shape[1]), [str(name) for name in auc.columns], rotation=30, ha="right")
+    ax.set_yticks(range(auc.shape[0]), [str(name) for name in auc.index])
+    ax.set_xlabel(column_label)
+    ax.set_ylabel(row_label)
+    ax.grid(False)
+    ax.figure.colorbar(image, ax=ax, label="AUC")
+    return ax
+
+
+def plot_class_trends(trends: pd.DataFrame, x_label: str, title: str) -> Figure:
+    """Mean probability and error rate of each class along ordered strata.
+
+    Left: observed bad rate and mean prior-corrected probability of bad, of all records and of
+    each class. Right: error rate of each class (good records predicted bad, bad records predicted good).
+
+    Args:
+        trends: Output of ``wqu.evaluation.strata.class_trends``.
+        x_label: Name of the stratified variable.
+        title: Figure title.
+
+    Returns:
+        The Figure.
+    """
+    figure, (probability_ax, error_ax) = plt.subplots(1, 2, figsize=(14, 4.8), constrained_layout=True)
+    positions = np.arange(len(trends))
+    probability_ax.plot(positions, trends["observed_bad_rate"], color=REFERENCE_LINE_COLOR, linestyle="--",
+                        linewidth=LINE_WIDTH, marker="o", markersize=4, label="observed bad rate")
+    probability_ax.plot(positions, trends["mean_probability"], color=NEUTRAL_COLOR, linewidth=LINE_WIDTH,
+                        marker="o", markersize=4, label="mean p(bad), all records")
+    for label, name in CLASS_NAMES_BY_LABEL.items():
+        probability_ax.plot(positions, trends[f"mean_probability_{name}"], color=LABEL_COLORS[label],
+                            linewidth=LINE_WIDTH, marker="o", markersize=4, label=f"mean p(bad), true {name}")
+        error_ax.plot(positions, trends[f"error_rate_{name}"], color=LABEL_COLORS[label], linewidth=LINE_WIDTH,
+                      marker="o", markersize=4, label=f"true {name}")
+    probability_ax.set_ylabel("share or probability of bad")
+    error_ax.set_ylabel("error rate")
+    probability_ax.set_ylim(0, 1)
+    error_ax.set_ylim(bottom=0)
+    for ax in (probability_ax, error_ax):
+        ax.set_xticks(positions, [str(name) for name in trends.index], rotation=30, ha="right")
+        ax.set_xlabel(x_label)
+        ax.legend(fontsize=8)
+    figure.suptitle(title, x=0.01, ha="left")
+    return figure
+
+
+def plot_category_distributions(values: pd.Series, categories: pd.Series, order: Sequence[str], label: str, ax: Axes) -> Axes:
+    """Box plot of one per-record quantity by category.
+
+    Args:
+        values: Quantity of each record.
+        categories: Category of each record, aligned with ``values``.
+        order: Categories in display order (missing ones are skipped).
+        label: Label of the quantity.
+        ax: Axes to draw on.
+
+    Returns:
+        The Axes.
+    """
+    present = [name for name in order if (categories == name).any()]
+    data = [values[(categories == name).to_numpy()].dropna().to_numpy() for name in present]
+    boxes = ax.boxplot(data, patch_artist=True, showfliers=False, widths=0.6)
+    for box, name in zip(boxes["boxes"], present):
+        correctness, level, true_class = _category_parts(name)
+        box.set_facecolor(CATEGORY_COLORS[(correctness, level)])
+        box.set_alpha(0.7)
+        box.set_linestyle(TRUE_CLASS_LINE_STYLES[true_class])
+    for median in boxes["medians"]:
+        median.set_color(WINDOW_TRACE_COLOR)
+    ax.set_xticks(range(1, len(present) + 1), present, rotation=45, ha="right", fontsize=8)
+    ax.set_ylabel(label)
+    return ax
+
+
+CONFUSION_COLORMAP = "Blues"
+CONFUSION_CLASS_NAMES: tuple[str, str] = ("good", "bad")
+
+
+def plot_confusion_matrix(counts: np.ndarray, title: str, ax: Axes) -> Axes:
+    """Confusion matrix coloured by the share of each true class, with counts and shares written in the cells.
+
+    Args:
+        counts: 2 x 2 array, rows true class (good, bad), columns predicted class (good, bad).
+        title: Panel title.
+        ax: Axes to draw on.
+
+    Returns:
+        The Axes.
+    """
+    shares = counts / np.maximum(counts.sum(axis=1, keepdims=True), 1)
+    ax.imshow(shares, cmap=CONFUSION_COLORMAP, vmin=0.0, vmax=1.0)
+    for row in range(2):
+        for column in range(2):
+            color = "white" if shares[row, column] > 0.5 else WINDOW_TRACE_COLOR
+            ax.text(column, row, f"{counts[row, column]:,}\n{shares[row, column]:.1%}", ha="center", va="center",
+                    color=color, fontsize=11)
+    ax.set_xticks([0, 1], CONFUSION_CLASS_NAMES)
+    ax.set_yticks([0, 1], CONFUSION_CLASS_NAMES)
+    ax.set_xlabel("predicted class")
+    ax.set_ylabel("true class")
+    ax.grid(visible=False)
+    ax.set_title(title, loc="left", fontsize=10)
+    return ax
+
+
+def plot_confusion_matrices(matrices: Mapping[str, np.ndarray], title: str) -> Figure:
+    """Confusion matrices side by side (e.g. deterministic pass and MC dropout mean).
+
+    Args:
+        matrices: Mapping from panel title to 2 x 2 counts.
+        title: Figure title.
+
+    Returns:
+        The Figure.
+    """
+    figure, axes = plt.subplots(1, len(matrices), figsize=(4.6 * len(matrices), 4.4), constrained_layout=True,
+                                squeeze=False)
+    for ax, (name, counts) in zip(axes[0], matrices.items()):
+        plot_confusion_matrix(counts, name, ax)
+    figure.suptitle(title, x=0.01, ha="left")
+    return figure
+
+
+def plot_learning_curve(
+    runs: pd.DataFrame, curve_sizes: np.ndarray, curve_losses: np.ndarray, folds: pd.DataFrame, ax: Axes
+) -> Axes:
+    """Best validation loss against training records, with the fitted power law and the sizes of k folds.
+
+    Args:
+        runs: One row per run with ``training_records`` and ``validation_loss``.
+        curve_sizes: Training records at which the fitted curve is drawn.
+        curve_losses: Fitted loss at ``curve_sizes``.
+        folds: Output of ``wqu.training.learning_curve.fold_table`` (vertical lines at the training
+            records of each k).
+        ax: Axes to draw on.
+
+    Returns:
+        The Axes.
+    """
+    ax.plot(curve_sizes, curve_losses, color=NEUTRAL_COLOR, linewidth=LINE_WIDTH, label="power-law fit")
+    ax.scatter(runs["training_records"], runs["validation_loss"], color=TRAINING_SET_COLORS["validation"],
+               zorder=3, label="runs")
+    for n_folds, row in folds.iterrows():
+        ax.axvline(row["training_records"], color=REFERENCE_LINE_COLOR, linestyle=":", linewidth=1.0)
+        ax.annotate(f"k={n_folds}", (row["training_records"], 1.0), xycoords=("data", "axes fraction"),
+                    xytext=(2, -12), textcoords="offset points", fontsize=8)
+    ax.set_xlabel("training records")
+    ax.set_ylabel("best validation loss")
+    ax.legend(fontsize=8)
+    return ax
