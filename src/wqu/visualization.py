@@ -10,6 +10,7 @@ from __future__ import annotations
 
 from collections.abc import Iterable, Mapping, Sequence
 from pathlib import Path
+from typing import TYPE_CHECKING
 
 import cartopy.crs as ccrs
 import cartopy.feature as cfeature
@@ -20,6 +21,9 @@ import pandas as pd
 from matplotlib.axes import Axes
 from matplotlib.figure import Figure
 from matplotlib.ticker import MaxNLocator
+
+if TYPE_CHECKING:
+    from wqu.evaluation.explanations import ProfileStatistics
 
 LABEL_COLORS: Mapping[int, str] = {0: "#2a78d6", 1: "#eb6834"}
 # Categorical colors for groups other than the two classes (fixed order, never cycled).
@@ -1249,6 +1253,96 @@ def plot_category_profiles(
     ax.set_ylabel("mean share of the map")
     ax.legend(fontsize=7, ncol=2)
     return ax
+
+
+POOLED_HIGH_PROFILE_GROUP = "high"
+CORRECTNESS_LINE_STYLES: Mapping[str, str] = {"right": "-", "wrong": "--"}
+STANDARD_ERROR_ALPHA = 0.2
+PROFILE_LINE_WIDTH = 1.6
+
+
+def _profile_group_style(group: str) -> tuple[str, str]:
+    """Color and line style of a profile group (``<correctness>-<level>`` or the pooled ``high``)."""
+    if group == POOLED_HIGH_PROFILE_GROUP:
+        return NEUTRAL_COLOR, "-"
+    correctness, level = group.split("-")
+    return CATEGORY_COLORS[(correctness, level)], CORRECTNESS_LINE_STYLES[correctness]
+
+
+def _profile_group_label(group: str, count: int) -> str:
+    """Legend label of a profile group, with its number of records."""
+    if group == POOLED_HIGH_PROFILE_GROUP:
+        return f"high uncertainty ({count:,})"
+    correctness, level = group.split("-")
+    return f"{correctness}, {level} uncertainty ({count:,})"
+
+
+def plot_profile_statistics(
+    statistics: ProfileStatistics, x_values: np.ndarray, x_label: str, log_x: bool, ax: Axes
+) -> Axes:
+    """Mean Grad-CAM profiles of groups of records, with a band of one standard error.
+
+    A dotted line marks the value of a uniform profile (one over the number of bins).
+
+    Args:
+        statistics: Output of ``wqu.evaluation.explanations.profile_statistics``.
+        x_values: Bin centres (times or frequencies).
+        x_label: Label of the x axis.
+        log_x: Logarithmic x axis.
+        ax: Axes to draw on.
+
+    Returns:
+        The Axes.
+    """
+    for group, mean in statistics.mean.iterrows():
+        color, line_style = _profile_group_style(group)
+        values = mean.to_numpy()
+        error = statistics.standard_error.loc[group].to_numpy()
+        ax.plot(x_values, values, color=color, linestyle=line_style, linewidth=PROFILE_LINE_WIDTH,
+                label=_profile_group_label(group, int(statistics.counts[group])))
+        if np.isfinite(error).all():
+            ax.fill_between(x_values, values - error, values + error, color=color, alpha=STANDARD_ERROR_ALPHA,
+                            linewidth=0)
+    ax.axhline(1.0 / statistics.mean.shape[1], color=REFERENCE_LINE_COLOR, linestyle=":", linewidth=1.0,
+               label="uniform")
+    if log_x:
+        ax.set_xscale("log")
+    ax.set_xlabel(x_label)
+    ax.legend(fontsize=7)
+    return ax
+
+
+def plot_profiles_by_predicted_class(
+    time_statistics: Mapping[str, ProfileStatistics],
+    frequency_statistics: Mapping[str, ProfileStatistics],
+    times_s: np.ndarray,
+    frequencies_hz: np.ndarray,
+    title: str,
+) -> Figure:
+    """Mean Grad-CAM profiles over time and frequency, one column per predicted class.
+
+    Args:
+        time_statistics: Mapping from predicted class to the statistics of the time profiles
+            (``wqu.evaluation.explanations.profiles_by_predicted_class``).
+        frequency_statistics: The same for the frequency profiles.
+        times_s: Time-bin centres.
+        frequencies_hz: Frequency-bin centres.
+        title: Figure title.
+
+    Returns:
+        The Figure (rows: time, frequency; columns: predicted classes, in the order of the mappings).
+    """
+    classes = list(time_statistics)
+    figure, axes = plt.subplots(2, len(classes), figsize=(7.5 * len(classes), 9), sharey="row",
+                                constrained_layout=True, squeeze=False)
+    for column, name in enumerate(classes):
+        plot_profile_statistics(time_statistics[name], times_s, "time from window start (s)", False, axes[0, column])
+        plot_profile_statistics(frequency_statistics[name], frequencies_hz, "frequency (Hz)", True, axes[1, column])
+        axes[0, column].set_title(f"predicted {name}", loc="left")
+    for row in axes:
+        row[0].set_ylabel("mean share of the map")
+    figure.suptitle(title, x=0.01, ha="left")
+    return figure
 
 
 def plot_category_distributions(values: pd.Series, categories: pd.Series, order: Sequence[str], label: str, ax: Axes) -> Axes:

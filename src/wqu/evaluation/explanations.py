@@ -39,6 +39,16 @@ EXTREME_LEVELS: tuple[str, ...] = ("low", "high")
 CLASS_NAMES: tuple[str, ...] = ("good", "bad")
 MAP_EPSILON = 1e-12
 
+# Profiles by predicted class: groups of the low- and high-uncertainty records. The high-uncertainty
+# records are pooled in one group or split by true class; within one predicted class the true class
+# decides the correctness, so the split groups are right-high and wrong-high.
+PREDICTED_CLASS_COLUMN = "predicted_class"
+PROFILE_GROUP_COLUMN = "profile_group"
+HIGH_UNCERTAINTY_POOLED = "pooled"
+HIGH_UNCERTAINTY_SPLIT = "split"
+HIGH_UNCERTAINTY_MODES: tuple[str, ...] = (HIGH_UNCERTAINTY_POOLED, HIGH_UNCERTAINTY_SPLIT)
+POOLED_HIGH_GROUP = "high"
+
 
 @dataclass(frozen=True)
 class GradCamAggregate:
@@ -315,8 +325,37 @@ def padding_attention_ratio(time_profiles: np.ndarray, padding_profiles: np.ndar
     return ratio
 
 
+def uniform_pre_anchor_share(before_anchor: np.ndarray, visible_bins: np.ndarray | None) -> np.ndarray:
+    """Share before the anchor of a map spread uniformly over the time bins the network sees.
+
+    Args:
+        before_anchor: Boolean array (records, times), true for the time bins before the anchor.
+        visible_bins: Boolean array of the same shape, true for the time bins the network sees
+            (the time mask of a time-masked network), or None when it sees the whole window.
+
+    Returns:
+        Share of the visible time bins that lie before the anchor, per record.
+
+    Raises:
+        ValueError: If the shapes differ or a record has no visible time bin.
+    """
+    if visible_bins is None:
+        return before_anchor.mean(axis=1)
+    visible = np.asarray(visible_bins, dtype=bool)
+    if visible.shape != before_anchor.shape:
+        raise ValueError(f"visible_bins has shape {visible.shape}, expected {before_anchor.shape}.")
+    visible_counts = visible.sum(axis=1)
+    if (visible_counts == 0).any():
+        raise ValueError(f"{int((visible_counts == 0).sum())} records have no visible time bin; exclude them first.")
+    return (before_anchor & visible).sum(axis=1) / visible_counts
+
+
 def map_summary(
-    aggregate: GradCamAggregate, padding_profiles: np.ndarray, times_s: np.ndarray, anchor_offsets_s: np.ndarray
+    aggregate: GradCamAggregate,
+    padding_profiles: np.ndarray,
+    times_s: np.ndarray,
+    anchor_offsets_s: np.ndarray,
+    visible_bins: np.ndarray | None = None,
 ) -> pd.DataFrame:
     """Per-record shares of the map on padding and before the anchor, and map instability.
 
@@ -326,13 +365,16 @@ def map_summary(
         times_s: Time-bin centres of the grid.
         anchor_offsets_s: Seconds from the window start to the anchor of each record
             (``wqu.preprocessing.pipeline.anchor_offsets``).
+        visible_bins: Time masks of the records, shape (records, times), for a time-masked
+            network (its map is zero outside the mask); None when the network sees the whole window.
 
     Returns:
         Table with ``padding_share``, ``window_padding_share`` (share of the window that
         is padding, for reference), ``padding_attention_ratio`` (their ratio, only for
         windows with padding: 1 = the map is as concentrated on the padding as a uniform
         map, above 1 = more), ``pre_anchor_share``, ``uniform_pre_anchor_share`` (the same
-        share for a uniform map, which depends on the anchor position) and ``instability``.
+        share for a map uniform over the time bins the network sees, see
+        ``uniform_pre_anchor_share``) and ``instability``.
     """
     before_anchor = times_s[None, :] < np.asarray(anchor_offsets_s, dtype=float)[:, None]
     return pd.DataFrame(
@@ -341,7 +383,7 @@ def map_summary(
             "window_padding_share": padding_profiles.mean(axis=1),
             "padding_attention_ratio": padding_attention_ratio(aggregate.time_profiles, padding_profiles),
             "pre_anchor_share": (aggregate.time_profiles * before_anchor).sum(axis=1),
-            "uniform_pre_anchor_share": before_anchor.mean(axis=1),
+            "uniform_pre_anchor_share": uniform_pre_anchor_share(before_anchor, visible_bins),
             "instability": aggregate.instability,
         }
     )
@@ -379,6 +421,138 @@ def mean_profiles_by_category(profiles: np.ndarray, categories: pd.Series) -> pd
     """
     table = pd.DataFrame(profiles).groupby(categories.to_numpy()).mean()
     return table.reindex([name for name in category_order() if name in table.index])
+
+
+@dataclass(frozen=True)
+class ProfileStatistics:
+    """Mean profile of groups of records, with its standard error.
+
+    Attributes:
+        mean: Mean profile of each group, groups as rows and bins as columns.
+        standard_error: Standard error of the mean (NaN for groups of one record).
+        counts: Records per group.
+    """
+
+    mean: pd.DataFrame
+    standard_error: pd.DataFrame
+    counts: pd.Series
+
+
+def predicted_class(correctness: str, true_class: str) -> str:
+    """Class predicted by the network for a record of a given correctness and true class.
+
+    Args:
+        correctness: ``right`` or ``wrong``.
+        true_class: ``good`` or ``bad``.
+
+    Returns:
+        The true class if the prediction is right, the other class otherwise.
+    """
+    if correctness == "right":
+        return true_class
+    return next(name for name in CLASS_NAMES if name != true_class)
+
+
+def profile_group(correctness: str, uncertainty_level: str, true_class: str, high_uncertainty: str) -> str | None:
+    """Group of a record in the profiles by predicted class.
+
+    Args:
+        correctness: ``right`` or ``wrong``.
+        uncertainty_level: ``low``, ``middle`` or ``high``.
+        true_class: ``good`` or ``bad``.
+        high_uncertainty: ``HIGH_UNCERTAINTY_POOLED`` or ``HIGH_UNCERTAINTY_SPLIT``.
+
+    Returns:
+        ``<correctness>-<level>`` (e.g. ``wrong-low``), except ``high`` for the high-uncertainty
+        records when they are pooled; None for middle uncertainty (not shown). The true class is
+        not part of the group: within one predicted class it follows from the correctness.
+    """
+    if uncertainty_level == "middle":
+        return None
+    if uncertainty_level == "high" and high_uncertainty == HIGH_UNCERTAINTY_POOLED:
+        return POOLED_HIGH_GROUP
+    return f"{correctness}-{uncertainty_level}"
+
+
+def profile_group_order(high_uncertainty: str) -> list[str]:
+    """Groups of the profiles by predicted class, in display order.
+
+    Args:
+        high_uncertainty: ``HIGH_UNCERTAINTY_POOLED`` or ``HIGH_UNCERTAINTY_SPLIT``.
+
+    Returns:
+        Right and wrong low-uncertainty groups, then the high-uncertainty group or groups.
+    """
+    high = [POOLED_HIGH_GROUP] if high_uncertainty == HIGH_UNCERTAINTY_POOLED else ["right-high", "wrong-high"]
+    return ["right-low", "wrong-low", *high]
+
+
+def predicted_class_groups(categories: pd.DataFrame, high_uncertainty: str) -> pd.DataFrame:
+    """Predicted class and profile group of every record.
+
+    Args:
+        categories: Output of ``assign_categories``.
+        high_uncertainty: ``HIGH_UNCERTAINTY_POOLED`` or ``HIGH_UNCERTAINTY_SPLIT``.
+
+    Returns:
+        Table aligned with ``categories`` with ``predicted_class`` and ``profile_group``
+        (None for middle uncertainty).
+
+    Raises:
+        ValueError: If ``high_uncertainty`` is not one of ``HIGH_UNCERTAINTY_MODES``.
+    """
+    if high_uncertainty not in HIGH_UNCERTAINTY_MODES:
+        raise ValueError(f"high_uncertainty must be one of {HIGH_UNCERTAINTY_MODES}, got '{high_uncertainty}'.")
+    parts = categories[[CORRECTNESS_COLUMN, UNCERTAINTY_LEVEL_COLUMN, TRUE_CLASS_COLUMN]].itertuples(index=False)
+    rows = [
+        (predicted_class(correctness, true_class), profile_group(correctness, level, true_class, high_uncertainty))
+        for correctness, level, true_class in parts
+    ]
+    return pd.DataFrame(rows, columns=[PREDICTED_CLASS_COLUMN, PROFILE_GROUP_COLUMN], index=categories.index)
+
+
+def profile_statistics(profiles: np.ndarray, groups: pd.Series, order: list[str]) -> ProfileStatistics:
+    """Mean profile and standard error of the mean of each group.
+
+    Args:
+        profiles: Per-record profiles, shape (records, bins).
+        groups: Group of each record (records with a missing group are left out).
+        order: Groups to return, in order; groups without records are left out.
+
+    Returns:
+        ProfileStatistics.
+    """
+    grouped = pd.DataFrame(profiles).groupby(groups.to_numpy())
+    present = [name for name in order if name in grouped.groups]
+    counts = grouped.size().reindex(present)
+    mean = grouped.mean().reindex(present)
+    standard_error = grouped.std(ddof=1).reindex(present).div(np.sqrt(counts), axis=0)
+    return ProfileStatistics(mean, standard_error, counts)
+
+
+def profiles_by_predicted_class(
+    profiles: np.ndarray, categories: pd.DataFrame, high_uncertainty: str
+) -> dict[str, ProfileStatistics]:
+    """Mean profiles of the low- and high-uncertainty groups, separately for each predicted class.
+
+    For each predicted class: records predicted right and wrong with low uncertainty, and the
+    records with high uncertainty, pooled or split by true class (that is, into right and wrong).
+
+    Args:
+        profiles: Per-record profiles (over time or frequency), aligned with ``categories``.
+        categories: Output of ``assign_categories``.
+        high_uncertainty: ``HIGH_UNCERTAINTY_POOLED`` or ``HIGH_UNCERTAINTY_SPLIT``.
+
+    Returns:
+        Mapping from predicted class (``good``, ``bad``) to its ProfileStatistics.
+    """
+    groups = predicted_class_groups(categories, high_uncertainty)
+    order = profile_group_order(high_uncertainty)
+    statistics = {}
+    for name in CLASS_NAMES:
+        selected = (groups[PREDICTED_CLASS_COLUMN] == name).to_numpy()
+        statistics[name] = profile_statistics(profiles[selected], groups.loc[selected, PROFILE_GROUP_COLUMN], order)
+    return statistics
 
 
 def confident_errors(categories: pd.DataFrame, records: pd.DataFrame, metadata_columns: list[str]) -> pd.DataFrame:
