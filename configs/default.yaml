@@ -300,7 +300,7 @@ split:
   # assigned one by one, only to measure how optimistic such a split is. The record split is saved as
   # <output_file>_by_record.csv and its tables in <tables_dir>/by_record, so the event split is never overwritten.
   # Set it back to event before the search (notebook 08) and the learning curve (08a).
-  grouping: record
+  grouping: event
   validation_fraction: 0.2
   random_seed: 42
   output_file: data/splits/esm25_train_validation.csv
