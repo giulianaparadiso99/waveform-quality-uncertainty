@@ -10,12 +10,11 @@ from __future__ import annotations
 import numpy as np
 import pandas as pd
 import torch
+from scipy import special
 from torch import nn
 from torch.utils.data import DataLoader
 
 from wqu.models.loss import prior_corrected_probability
-
-PROBABILITY_EPSILON = 1e-12
 
 DROPOUT_TYPES: tuple[type[nn.Module], ...] = (nn.Dropout, nn.Dropout1d, nn.Dropout2d, nn.Dropout3d)
 
@@ -89,14 +88,17 @@ def mc_dropout_predictions(model: nn.Module, loader: DataLoader, n_samples: int,
 def binary_entropy(probability: np.ndarray) -> np.ndarray:
     """Entropy (nats) of a Bernoulli variable.
 
+    Computed in double precision with ``0 log 0 = 0``, so that probabilities equal to 0 or 1
+    (a saturated sigmoid in single precision) give zero entropy instead of NaN.
+
     Args:
         probability: Probability of the positive outcome.
 
     Returns:
-        Entropy, same shape as the input.
+        Entropy, same shape as the input, in double precision.
     """
-    clipped = np.clip(probability, PROBABILITY_EPSILON, 1.0 - PROBABILITY_EPSILON)
-    return -(clipped * np.log(clipped) + (1.0 - clipped) * np.log(1.0 - clipped))
+    values = np.asarray(probability, dtype=np.float64)
+    return special.entr(values) + special.entr(1.0 - values)
 
 
 def uncertainty_summary(samples: np.ndarray) -> pd.DataFrame:
