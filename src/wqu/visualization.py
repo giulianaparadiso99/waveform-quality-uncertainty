@@ -1529,3 +1529,41 @@ def plot_learning_curve(
     ax.set_ylabel("best validation loss")
     ax.legend(fontsize=8)
     return ax
+
+
+OBSPY_IMAGE_COLORMAP = "gray"
+
+
+def plot_obspy_images(
+    images: np.ndarray, record_titles: Sequence[str], component_names: Sequence[str], title: str
+) -> Figure:
+    """Images of the ``obspy_spectrogram`` representation, one row per record and one column per component.
+
+    The images are drawn in grey levels between 0 and 1, as the network sees them (rows: frequency
+    increasing upwards; columns: time).
+
+    Args:
+        images: Array of shape (records, components, n_frequencies, n_times).
+        record_titles: One title per record.
+        component_names: One name per component.
+        title: Figure title.
+
+    Returns:
+        Figure.
+    """
+    n_records, n_components = images.shape[:2]
+    figure, axes = plt.subplots(n_records, n_components, figsize=(2.2 * n_components, 2.0 * n_records),
+                                squeeze=False, constrained_layout=True)
+    for row in range(n_records):
+        for column in range(n_components):
+            ax = axes[row, column]
+            ax.imshow(images[row, column], cmap=OBSPY_IMAGE_COLORMAP, vmin=0.0, vmax=1.0, origin="lower",
+                      aspect="auto", interpolation="nearest")
+            ax.set_xticks([])
+            ax.set_yticks([])
+            ax.grid(False)
+            if row == 0:
+                ax.set_title(component_names[column])
+        axes[row, 0].set_ylabel(record_titles[row], fontsize=8)
+    figure.suptitle(title, x=0.01, ha="left")
+    return figure

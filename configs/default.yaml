@@ -292,6 +292,35 @@ preprocessing:
   output_dir: data/processed
   figures_dir: outputs/figures/02_preprocessing
   tables_dir: outputs/tables/02_preprocessing
+  # Images in the style of Shalabi et al. (2026) for training.representation: obspy_spectrogram (notebook 02d). The
+  # defaults reproduce the paper: ObsPy spectrogram (Trace.spectrogram with its default settings) of each component at
+  # its original sampling rate, over its recorded samples, linear frequencies up to Nyquist, power in decibels scaled
+  # to [0, 1] per component, reduced to 64 x 64. Each combination of settings has its own feature file, in
+  # output_dir/<source>/obspy/<settings>/ (one more subfolder with the window placement for time_axis: window).
+  obspy_spectrogram:
+    # original = each record resampled to original_sampling_rate_hz (at most the stored rate); stored = stored rate.
+    sampling_rate: original
+    # Hann window of window_samples samples, overlap between windows, each window zero-padded to
+    # pad_factor * window_samples samples (ObsPy defaults: 128, 0.9, 8).
+    window_samples: 128
+    overlap: 0.9
+    pad_factor: 8
+    # recorded = each component cut to its own recorded samples and stretched to n_times columns; window = the window
+    # of preprocessing.window (anchor and placement), the same for the three components, padding included.
+    time_axis: recorded
+    # linear = from the first frequency above zero to Nyquist (rows in fractions of the Nyquist frequency of each
+    # record); logarithmic = between min_frequency_hz and max_frequency_hz (rows in Hz, the same for every record).
+    frequency_axis: linear
+    min_frequency_hz: 0.1
+    max_frequency_hz: 40.0
+    # decibel = 10 log10 of the power (floor: decibel.floor_power); linear = square root of the power (ObsPy default
+    # drawing; the paper reports a logarithmic scale).
+    amplitude_scale: decibel
+    # min_max = each component scaled to [0, 1] by its minimum and maximum (as the colour scale of the figure);
+    # none = values kept (absolute decibels).
+    normalization: min_max
+    n_frequencies: 64
+    n_times: 64
 
 # Training/validation split of ESM25 (the test set is made of later ESM records, outside ESM25).
 # Records are grouped by event (columns.event_id) and stratified by label.
@@ -311,8 +340,10 @@ split:
 # Dropout everywhere, so that MC dropout samples the whole network.
 model:
   # cred = convolutional-recurrent network below (default); inception = network with Inception blocks (settings in
-  # `inception` below). Time masking and the MC dropout and Grad-CAM settings apply to both.
-  architecture: inception
+  # `inception` below); shalabi_inception = the InceptionNet variant as in the code of Shalabi et al. (settings in
+  # `shalabi_inception` below; 64 x 64 inputs, needs time_masking: false). Time masking and the MC dropout and Grad-CAM
+  # settings apply to all of them.
+  architecture: cred
   # One stage per entry; each stage halves frequencies and times. CRED: 8 and 16 filters, kernels 9 and 5.
   conv_filters: [8, 16]
   conv_kernels: [9, 5]
@@ -344,6 +375,18 @@ model:
     # (0.4 in the paper).
     block_dropout: 0.1
     head_dropout: 0.4
+  # InceptionNet variant as in the code of Shalabi et al. (2026): stem of a 7 x 7 convolution (stride 2) and a 3 x 3
+  # convolution with batch normalization and ReLU and a 3 x 3 max pooling (stride 2); Inception blocks of 64, 128, 256
+  # and 512 channels with a 3 x 3 max pooling (stride 2) after the second and the fourth; global average, dropout and
+  # the output layer. Channels, kernels and pooling are those of the paper code.
+  shalabi_inception:
+    # none = batch normalization of the concatenated branches only (paper code); after_concat = batch normalization
+    # and ReLU of the concatenated branches; every_conv = batch normalization and ReLU after every convolution.
+    block_activation: after_concat
+    # Channel dropout after every block (0 = none, as in the paper; > 0 for MC dropout over the whole network) and
+    # dropout before the output layer (0.4 in the paper).
+    block_dropout: 0.1
+    head_dropout: 0.4
   # Stochastic forward passes for MC dropout predictions.
   mc_samples: 50
   # Grad-CAM (Captum) on the last convolutional layer, maps for both classes over MC dropout passes.
@@ -356,6 +399,7 @@ model:
 # Training of the classifier (notebook 05). Each run is saved in runs_dir/<representation>_<date-time>/ with the
 # configuration, the normalization statistics, the best model, the history per epoch and the figures.
 training:
+  # spectrogram or scalogram (notebook 02), obspy_spectrogram (notebook 02d).
   representation: scalogram
   # dev_subset to test the pipeline, seisbench for the full ESM25.
   feature_source: seisbench
@@ -380,6 +424,12 @@ training:
   # Bins of the expected calibration error (ECE).
   calibration_bins: 15
   runs_dir: runs
+  # Weight of the bad class in the loss: balanced = n_good / n_bad of the training records (probabilities corrected
+  # back to the class frequencies afterwards); none = unweighted BCE, as in Shalabi et al. (on balanced data).
+  class_weighting: balanced
+  # Standardization of the inputs: frequency = per-frequency mean and standard deviation of the training records;
+  # none = images used as stored (as in Shalabi et al., images in [0, 1]).
+  standardization: frequency
 
 # Evaluation of a training run (notebook 06), from the validation predictions saved by notebook 05.
 evaluation:

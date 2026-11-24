@@ -3,6 +3,8 @@
 Weighting the bad class by ``w = n_good / n_bad`` trains the network as if the
 classes were balanced, so its probabilities refer to a balanced prior. They are
 mapped back to the class frequencies of the data with ``prior_corrected_probability``.
+Without weighting (``training.class_weighting: none``) the weight is 1 and the correction
+leaves the probabilities unchanged.
 """
 
 from __future__ import annotations
@@ -10,6 +12,10 @@ from __future__ import annotations
 import numpy as np
 import torch
 from torch import nn
+
+from wqu.config import BALANCED_CLASS_WEIGHTING, NO_CLASS_WEIGHTING
+
+UNWEIGHTED = 1.0
 
 
 def bad_class_weight(labels: np.ndarray) -> float:
@@ -29,6 +35,26 @@ def bad_class_weight(labels: np.ndarray) -> float:
     if n_bad == 0 or n_good == 0:
         raise ValueError("Both classes must be present to compute the class weight.")
     return n_good / n_bad
+
+
+def class_weight(labels: np.ndarray, weighting: str) -> float:
+    """Weight of the bad class for a weighting scheme.
+
+    Args:
+        labels: Training labels (0 = good, 1 = bad).
+        weighting: ``balanced`` (``bad_class_weight``) or ``none`` (weight 1).
+
+    Returns:
+        Weight of the bad class.
+
+    Raises:
+        ValueError: If the scheme is unknown.
+    """
+    if weighting == BALANCED_CLASS_WEIGHTING:
+        return bad_class_weight(labels)
+    if weighting == NO_CLASS_WEIGHTING:
+        return UNWEIGHTED
+    raise ValueError(f"Unknown class weighting '{weighting}'.")
 
 
 def weighted_bce_loss(bad_weight: float) -> nn.BCEWithLogitsLoss:

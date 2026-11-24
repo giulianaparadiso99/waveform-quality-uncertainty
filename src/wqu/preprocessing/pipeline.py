@@ -16,7 +16,13 @@ import numpy as np
 import pandas as pd
 from tqdm.auto import tqdm
 
-from wqu.config import CLAMPED_WINDOW_PLACEMENT, DEFAULT_WINDOW_PLACEMENT, FULL_WINDOW_PLACEMENT, PreprocessingConfig
+from wqu.config import (
+    CLAMPED_WINDOW_PLACEMENT,
+    DEFAULT_WINDOW_PLACEMENT,
+    FULL_WINDOW_PLACEMENT,
+    VALID_REPRESENTATIONS,
+    PreprocessingConfig,
+)
 from wqu.data.loading import CV_COMPONENTS, read_metadata_csv
 from wqu.preprocessing.anchoring import window_anchor
 from wqu.preprocessing.transform import (
@@ -461,15 +467,16 @@ def read_features(path: Path, representation: str, rows: np.ndarray) -> tuple[np
     """Read stored decibel arrays and the grid.
 
     Args:
-        path: Feature file written by ``preprocess_and_store``.
-        representation: ``spectrogram`` or ``scalogram``.
+        path: Feature file written by ``preprocess_and_store`` (or by
+            ``wqu.preprocessing.obspy_features.store_obspy_features`` for ``obspy_spectrogram``).
+        representation: One of ``VALID_REPRESENTATIONS``.
         rows: Rows to read (``feature_index`` values).
 
     Returns:
         Tuple (array of shape (rows, components, frequencies, times) in float32, grid).
     """
-    if representation not in REPRESENTATIONS:
-        raise ValueError(f"Unknown representation '{representation}'; expected one of {REPRESENTATIONS}.")
+    if representation not in VALID_REPRESENTATIONS:
+        raise ValueError(f"Unknown representation '{representation}'; expected one of {VALID_REPRESENTATIONS}.")
     order = np.argsort(rows)
     with h5py.File(path, mode="r") as stored:
         values = stored[representation][np.asarray(rows)[order]].astype(np.float32)

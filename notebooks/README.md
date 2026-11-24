@@ -11,6 +11,7 @@ settings of their own. The code they call is in the `wqu` package (`src/wqu/`).
 | `02_preprocessing` | Choice of the analysis window and of the anchoring method on the development subset; spectrogram and scalogram of example records; decibel floor | Development subset | `outputs/*/02_preprocessing`; features of the development subset in `data/processed/dev_subset/` |
 | `02b_preprocessing_full` | Spectrograms and scalograms of all ESM25 records, with the window placement of `preprocessing.window.placement` | Full SeisBench datasets | `data/processed/seisbench/[<placement>/]features.h5` and `records.csv` |
 | `02c_time_masks` | Time bins of every record that contain recorded data (needed with `model.time_masking: true`) | Feature file, traces | `time_masks.h5` next to the feature file |
+| `02d_obspy_features` | Images in the style of Shalabi et al. (ObsPy spectrogram, 64 x 64; settings in `preprocessing.obspy_spectrogram`) and check of the configured network on them | Full SeisBench datasets | `data/processed/seisbench/obspy/<settings>/features.h5`, `records.csv`, `excluded_records.csv` |
 | `03_split` | Training/validation split grouped by event and stratified by label | ESM25 metadata | `data/splits/esm25_train_validation.csv`, `outputs/tables/03_split` |
 | `04_model_check` | Architecture, number of parameters, training speed, MC dropout and Grad-CAM mechanics on an untrained network | Features of the development subset | `outputs/*/04_model` |
 | `05_training` | Training of one model and MC dropout predictions on the validation set | Feature file, time masks, split | `runs/<representation>_<date>_<time>/` |
@@ -32,6 +33,8 @@ settings of their own. The code they call is in the `wqu` package (`src/wqu/`).
 ```
 
 - `02c` is needed only for the network with time masking, and must be run again for every window placement.
+- `02d` replaces `02b` and `02c` for the replication of Shalabi et al. (`training.representation: obspy_spectrogram`,
+  `model.architecture: shalabi_inception`); it is run again for every combination of image settings.
 - `03` is run once: the split is saved and reused by every experiment. The folds of the search (notebook `08`) are
   computed from the same file.
 - `06` and `07` evaluate the run chosen with `evaluation.run` (`latest` = most recent run of
@@ -41,7 +44,8 @@ settings of their own. The code they call is in the `wqu` package (`src/wqu/`).
 
 | Key | Used by | Meaning |
 |---|---|---|
-| `training.representation` | 05, 06, 07, 08a, 08 | `spectrogram` or `scalogram` |
+| `training.representation` | 05, 06, 07, 08a, 08 | `spectrogram`, `scalogram` or `obspy_spectrogram` |
+| `training.class_weighting`, `training.standardization` | 05 | weighted or unweighted loss; standardized or stored inputs |
 | `training.feature_source` | 02c, 05, 07, 08a, 08 | `seisbench` (full dataset) or `dev_subset` |
 | `preprocessing.window.placement` | 02, 02b, 02c, 05, 07, 08a, 08 | `anchored`, `clamped` or `full` |
 | `model.time_masking` | 02c, 05, 07, 08a, 08 | network that ignores the zero padding |
@@ -80,6 +84,7 @@ figures of the search.
 |---|---|
 | `02b` | continues from the records not yet processed |
 | `02c` | starts again from the beginning (no incomplete file is left) |
+| `02d` | continues from the records not yet processed |
 | `05` | with `training.resume: true`, continues the most recent unfinished run from its last epoch |
 | `08a` | finished runs are skipped, the interrupted one continues from its last epoch |
 | `08` | finished trials and folds are kept; the interrupted trial is resumed from its last epoch after `search.grace_period_s` seconds |

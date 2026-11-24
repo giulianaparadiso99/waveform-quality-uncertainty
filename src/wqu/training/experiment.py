@@ -34,12 +34,8 @@ from wqu.data.splitting import (
 from wqu.models.cred import build_model
 from wqu.models.loss import bad_class_weight, prior_corrected_probability, weighted_bce_loss
 from wqu.models.uncertainty import deterministic_probabilities, prediction_table
-from wqu.preprocessing.pipeline import (
-    FEATURE_INDEX_COLUMN,
-    check_feature_placement,
-    feature_file_path,
-    read_feature_records,
-)
+from wqu.preprocessing.features import check_representation_features, representation_feature_path
+from wqu.preprocessing.pipeline import FEATURE_INDEX_COLUMN, read_feature_records
 from wqu.preprocessing.time_masks import drop_records_without_data, read_time_masks, time_mask_path
 from wqu.training.data import FeatureDataset, FrequencyStatistics, frequency_statistics, make_loader
 from wqu.training.trainer import FitResult, fit, set_seed
@@ -130,8 +126,9 @@ def load_experiment_records(config: ProjectConfig) -> ExperimentRecords:
         raise ValueError(f"split.grouping is '{config.split.grouping}': the learning curve and the search use the "
                          f"split grouped by event, set it to '{EVENT_SPLIT_GROUPING}'.")
     config_columns = config.columns
-    features_path = feature_file_path(config.preprocessing, config.training.feature_source)
-    check_feature_placement(features_path, config.preprocessing)
+    training = config.training
+    features_path = representation_feature_path(config.preprocessing, training.feature_source, training.representation)
+    check_representation_features(features_path, config.preprocessing, training.representation)
     records = read_feature_records(features_path, config_columns.text)
     records[SPLIT_COLUMN] = attach_split(records, load_split(config.split.output_file, config_columns), config_columns)
     time_masks = read_time_masks(time_mask_path(features_path)) if config.model.time_masking else None

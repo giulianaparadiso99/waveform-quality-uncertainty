@@ -41,7 +41,47 @@ REQUIRED_LABELS: frozenset[int] = frozenset({0, 1})
 # InceptionNet variant of Shalabi et al. (see wqu.models.inception).
 CRED_ARCHITECTURE = "cred"
 INCEPTION_ARCHITECTURE = "inception"
-VALID_ARCHITECTURES: tuple[str, ...] = (CRED_ARCHITECTURE, INCEPTION_ARCHITECTURE)
+# shalabi_inception = the InceptionNet variant as in the code of Shalabi et al. (64 x 64 inputs, no time masking;
+# see wqu.models.shalabi_inception).
+SHALABI_INCEPTION_ARCHITECTURE = "shalabi_inception"
+VALID_ARCHITECTURES: tuple[str, ...] = (CRED_ARCHITECTURE, INCEPTION_ARCHITECTURE, SHALABI_INCEPTION_ARCHITECTURE)
+# Activation inside the Inception blocks of shalabi_inception: none = batch normalization of the concatenated
+# branches only (as in the code of the paper); after_concat = batch normalization and ReLU of the concatenated
+# branches; every_conv = batch normalization and ReLU after every convolution of the branches.
+NO_BLOCK_ACTIVATION = "none"
+AFTER_CONCAT_BLOCK_ACTIVATION = "after_concat"
+EVERY_CONV_BLOCK_ACTIVATION = "every_conv"
+VALID_BLOCK_ACTIVATIONS: tuple[str, ...] = (NO_BLOCK_ACTIVATION, AFTER_CONCAT_BLOCK_ACTIVATION, EVERY_CONV_BLOCK_ACTIVATION)
+# Input representations: spectrogram and scalogram on the common grid (notebook 02), obspy_spectrogram = images in
+# the style of Shalabi et al. (ObsPy spectrogram resized to a small fixed size; notebook 02d).
+OBSPY_REPRESENTATION = "obspy_spectrogram"
+VALID_REPRESENTATIONS: tuple[str, ...] = ("spectrogram", "scalogram", OBSPY_REPRESENTATION)
+# Options of the obspy_spectrogram images (see wqu.preprocessing.obspy_spectrogram).
+ORIGINAL_SAMPLING_RATE = "original"
+STORED_SAMPLING_RATE = "stored"
+VALID_OBSPY_SAMPLING_RATES: tuple[str, ...] = (ORIGINAL_SAMPLING_RATE, STORED_SAMPLING_RATE)
+RECORDED_TIME_AXIS = "recorded"
+WINDOW_TIME_AXIS = "window"
+VALID_OBSPY_TIME_AXES: tuple[str, ...] = (RECORDED_TIME_AXIS, WINDOW_TIME_AXIS)
+LINEAR_FREQUENCY_AXIS = "linear"
+LOGARITHMIC_FREQUENCY_AXIS = "logarithmic"
+VALID_OBSPY_FREQUENCY_AXES: tuple[str, ...] = (LINEAR_FREQUENCY_AXIS, LOGARITHMIC_FREQUENCY_AXIS)
+DECIBEL_AMPLITUDE = "decibel"
+LINEAR_AMPLITUDE = "linear"
+VALID_OBSPY_AMPLITUDE_SCALES: tuple[str, ...] = (DECIBEL_AMPLITUDE, LINEAR_AMPLITUDE)
+MIN_MAX_NORMALIZATION = "min_max"
+NO_IMAGE_NORMALIZATION = "none"
+VALID_OBSPY_NORMALIZATIONS: tuple[str, ...] = (MIN_MAX_NORMALIZATION, NO_IMAGE_NORMALIZATION)
+# Weight of the bad class in the loss: balanced = n_good / n_bad of the training records (default, also when the
+# configuration does not say); none = unweighted loss.
+BALANCED_CLASS_WEIGHTING = "balanced"
+NO_CLASS_WEIGHTING = "none"
+VALID_CLASS_WEIGHTINGS: tuple[str, ...] = (BALANCED_CLASS_WEIGHTING, NO_CLASS_WEIGHTING)
+# Standardization of the inputs: frequency = per-frequency mean and standard deviation of the training records
+# (default, also when the configuration does not say); none = images used as stored.
+FREQUENCY_STANDARDIZATION = "frequency"
+NO_STANDARDIZATION = "none"
+VALID_STANDARDIZATIONS: tuple[str, ...] = (FREQUENCY_STANDARDIZATION, NO_STANDARDIZATION)
 # Grouping of the training/validation split: event = all the records of an event in the same set (default, also
 # when the configuration does not name a grouping); record = records assigned one by one (no grouping), to measure
 # how optimistic a split without grouping is. The record split is stored next to the event split, with a suffix.
@@ -234,6 +274,61 @@ class AnchoringConfig:
 
 
 @dataclass(frozen=True)
+class ObspySpectrogramConfig:
+    """Images in the style of Shalabi et al. (``wqu.preprocessing.obspy_spectrogram``).
+
+    Attributes:
+        sampling_rate: ``original`` (each record resampled to its original sampling rate, at most the stored
+            one) or ``stored`` (the rate of the stored traces).
+        window_samples: Samples of the Hann window of the short-time Fourier transform (a power of two).
+        overlap: Fraction of overlap between consecutive windows.
+        pad_factor: Zero-padding of each window to ``pad_factor * window_samples`` samples (a power of two).
+        time_axis: ``recorded`` (each component cut to its own recorded samples) or ``window`` (the window of
+            ``preprocessing.window``, the same for the three components, zero padding included).
+        frequency_axis: ``linear`` (from the first frequency above zero to the Nyquist frequency of the
+            record) or ``logarithmic`` (between ``min_frequency_hz`` and ``max_frequency_hz``).
+        min_frequency_hz: Lowest frequency of the logarithmic axis.
+        max_frequency_hz: Highest frequency of the logarithmic axis.
+        amplitude_scale: ``decibel`` (10 log10 of the power) or ``linear`` (square root of the power, the
+            default of ObsPy).
+        normalization: ``min_max`` (each component scaled to [0, 1] by its minimum and maximum) or ``none``.
+        n_frequencies: Rows of the stored image.
+        n_times: Columns of the stored image.
+    """
+
+    sampling_rate: str
+    window_samples: int
+    overlap: float
+    pad_factor: int
+    time_axis: str
+    frequency_axis: str
+    min_frequency_hz: float
+    max_frequency_hz: float
+    amplitude_scale: str
+    normalization: str
+    n_frequencies: int
+    n_times: int
+
+    @property
+    def variant_name(self) -> str:
+        """Short name of the options that change the images, used as folder name of the feature file."""
+        frequency_axis = self.frequency_axis
+        if frequency_axis == LOGARITHMIC_FREQUENCY_AXIS:
+            frequency_axis += f"{self.min_frequency_hz:g}-{self.max_frequency_hz:g}"
+        return "_".join(
+            (
+                self.sampling_rate,
+                self.time_axis,
+                frequency_axis,
+                self.amplitude_scale,
+                self.normalization,
+                f"w{self.window_samples}o{self.overlap:g}p{self.pad_factor}",
+                f"{self.n_frequencies}x{self.n_times}",
+            )
+        )
+
+
+@dataclass(frozen=True)
 class PreprocessingConfig:
     """Parameters of the waveform-to-image preprocessing.
 
@@ -269,6 +364,7 @@ class PreprocessingConfig:
     output_dir: Path
     figures_dir: Path
     tables_dir: Path
+    obspy_spectrogram: ObspySpectrogramConfig | None = None
 
     @property
     def window_length_s(self) -> float:
@@ -333,6 +429,21 @@ class InceptionConfig:
 
 
 @dataclass(frozen=True)
+class ShalabiInceptionConfig:
+    """InceptionNet variant of Shalabi et al. (``wqu.models.shalabi_inception``).
+
+    Attributes:
+        block_activation: Activation inside the Inception blocks (see ``VALID_BLOCK_ACTIVATIONS``).
+        block_dropout: Channel dropout rate after every Inception block (0 = none, as in the paper).
+        head_dropout: Dropout rate before the output layer.
+    """
+
+    block_activation: str
+    block_dropout: float
+    head_dropout: float
+
+
+@dataclass(frozen=True)
 class ModelConfig:
     """Convolutional-recurrent network adapted from CRED (Mousavi et al., 2019).
 
@@ -355,9 +466,11 @@ class ModelConfig:
         grad_cam_records_per_class: Records per class shown in the Grad-CAM check.
         figures_dir: Output directory for the figures of the model checks.
         tables_dir: Output directory for the tables of the model checks.
-        architecture: ``cred`` (the fields above) or ``inception`` (the ``inception`` settings; the
-            CRED fields are then unused, except time masking and the MC dropout settings).
+        architecture: ``cred`` (the fields above), ``inception`` (the ``inception`` settings) or
+            ``shalabi_inception`` (the ``shalabi_inception`` settings); with the Inception networks the CRED
+            fields are unused, except time masking and the MC dropout settings.
         inception: Settings of the Inception network, or None when the configuration has none.
+        shalabi_inception: Settings of the Shalabi Inception network, or None when the configuration has none.
     """
 
     conv_filters: tuple[int, ...]
@@ -377,6 +490,7 @@ class ModelConfig:
     tables_dir: Path
     architecture: str = CRED_ARCHITECTURE
     inception: InceptionConfig | None = None
+    shalabi_inception: ShalabiInceptionConfig | None = None
 
 
 @dataclass(frozen=True)
@@ -384,7 +498,7 @@ class TrainingConfig:
     """Training of the classifier.
 
     Attributes:
-        representation: ``spectrogram`` or ``scalogram``.
+        representation: One of ``VALID_REPRESENTATIONS``.
         feature_source: Waveform source whose feature file is used (``dev_subset`` or ``seisbench``).
         batch_size: Records per batch.
         learning_rate: Initial learning rate of Adam.
@@ -401,6 +515,8 @@ class TrainingConfig:
         random_seed: Seed of weights, batch order and dropout.
         calibration_bins: Bins of the expected calibration error.
         runs_dir: Directory where every run gets its own folder.
+        class_weighting: Weight of the bad class in the loss (see ``VALID_CLASS_WEIGHTINGS``).
+        standardization: Standardization of the inputs (see ``VALID_STANDARDIZATIONS``).
     """
 
     representation: str
@@ -419,6 +535,8 @@ class TrainingConfig:
     random_seed: int
     calibration_bins: int
     runs_dir: Path
+    class_weighting: str = BALANCED_CLASS_WEIGHTING
+    standardization: str = FREQUENCY_STANDARDIZATION
 
 
 @dataclass(frozen=True)
@@ -978,6 +1096,56 @@ def _build_anchoring_config(section: Mapping[str, Any]) -> AnchoringConfig:
     return config
 
 
+def _is_power_of_two(value: int) -> bool:
+    """Whether a positive integer is a power of two."""
+    return value > 0 and value & (value - 1) == 0
+
+
+def _build_obspy_spectrogram_config(section: Mapping[str, Any]) -> ObspySpectrogramConfig:
+    """Build and validate the ``preprocessing.obspy_spectrogram`` section.
+
+    Args:
+        section: Parsed ``preprocessing.obspy_spectrogram`` mapping.
+
+    Returns:
+        Validated ObspySpectrogramConfig.
+    """
+    context = "preprocessing.obspy_spectrogram"
+    config = ObspySpectrogramConfig(
+        sampling_rate=str(_require(section, "sampling_rate", context)),
+        window_samples=int(_require(section, "window_samples", context)),
+        overlap=float(_require(section, "overlap", context)),
+        pad_factor=int(_require(section, "pad_factor", context)),
+        time_axis=str(_require(section, "time_axis", context)),
+        frequency_axis=str(_require(section, "frequency_axis", context)),
+        min_frequency_hz=float(_require(section, "min_frequency_hz", context)),
+        max_frequency_hz=float(_require(section, "max_frequency_hz", context)),
+        amplitude_scale=str(_require(section, "amplitude_scale", context)),
+        normalization=str(_require(section, "normalization", context)),
+        n_frequencies=int(_require(section, "n_frequencies", context)),
+        n_times=int(_require(section, "n_times", context)),
+    )
+    choices = (
+        ("sampling_rate", config.sampling_rate, VALID_OBSPY_SAMPLING_RATES),
+        ("time_axis", config.time_axis, VALID_OBSPY_TIME_AXES),
+        ("frequency_axis", config.frequency_axis, VALID_OBSPY_FREQUENCY_AXES),
+        ("amplitude_scale", config.amplitude_scale, VALID_OBSPY_AMPLITUDE_SCALES),
+        ("normalization", config.normalization, VALID_OBSPY_NORMALIZATIONS),
+    )
+    problems = [f"{name} must be one of {valid}" for name, value, valid in choices if value not in valid]
+    if not _is_power_of_two(config.window_samples) or not _is_power_of_two(config.pad_factor):
+        problems.append("window_samples and pad_factor must be powers of two")
+    if not 0.0 <= config.overlap < 1.0:
+        problems.append("overlap must be in [0, 1)")
+    if not 0.0 < config.min_frequency_hz < config.max_frequency_hz:
+        problems.append("requires 0 < min_frequency_hz < max_frequency_hz")
+    if config.n_frequencies < 2 or config.n_times < 2:
+        problems.append("n_frequencies and n_times must be at least 2")
+    if problems:
+        raise ValueError("Invalid obspy_spectrogram configuration: " + "; ".join(problems) + ".")
+    return config
+
+
 def _build_preprocessing_config(section: Mapping[str, Any], project_root: Path, trace_length_s: float) -> PreprocessingConfig:
     """Build and validate the ``preprocessing`` section.
 
@@ -1028,6 +1196,8 @@ def _build_preprocessing_config(section: Mapping[str, Any], project_root: Path, 
         output_dir=_resolve_path(_require(section, "output_dir", context), project_root),
         figures_dir=_resolve_path(_require(section, "figures_dir", context), project_root),
         tables_dir=_resolve_path(_require(section, "tables_dir", context), project_root),
+        obspy_spectrogram=(_build_obspy_spectrogram_config(section["obspy_spectrogram"])
+                           if section.get("obspy_spectrogram") is not None else None),
     )
     nyquist_hz = config.target_sampling_rate_hz / 2.0
     problems = []
@@ -1138,6 +1308,31 @@ def _build_inception_config(section: Mapping[str, Any]) -> InceptionConfig:
     return config
 
 
+def _build_shalabi_inception_config(section: Mapping[str, Any]) -> ShalabiInceptionConfig:
+    """Build and validate the ``model.shalabi_inception`` section.
+
+    Args:
+        section: Parsed ``model.shalabi_inception`` mapping.
+
+    Returns:
+        Validated ShalabiInceptionConfig.
+    """
+    context = "model.shalabi_inception"
+    config = ShalabiInceptionConfig(
+        block_activation=str(_require(section, "block_activation", context)),
+        block_dropout=float(_require(section, "block_dropout", context)),
+        head_dropout=float(_require(section, "head_dropout", context)),
+    )
+    problems = []
+    if config.block_activation not in VALID_BLOCK_ACTIVATIONS:
+        problems.append(f"block_activation must be one of {VALID_BLOCK_ACTIVATIONS}")
+    if not all(0.0 <= rate < 1.0 for rate in (config.block_dropout, config.head_dropout)):
+        problems.append("dropout rates must be in [0, 1)")
+    if problems:
+        raise ValueError("Invalid Shalabi Inception configuration: " + "; ".join(problems) + ".")
+    return config
+
+
 def _build_model_config(section: Mapping[str, Any], project_root: Path) -> ModelConfig:
     """Build and validate the ``model`` section.
 
@@ -1169,12 +1364,18 @@ def _build_model_config(section: Mapping[str, Any], project_root: Path) -> Model
         tables_dir=_resolve_path(_require(section, "tables_dir", context), project_root),
         architecture=str(section.get("architecture", CRED_ARCHITECTURE)),
         inception=_build_inception_config(section["inception"]) if section.get("inception") is not None else None,
+        shalabi_inception=(_build_shalabi_inception_config(section["shalabi_inception"])
+                           if section.get("shalabi_inception") is not None else None),
     )
     problems = []
     if config.architecture not in VALID_ARCHITECTURES:
         problems.append(f"architecture must be one of {VALID_ARCHITECTURES}")
     if config.architecture == INCEPTION_ARCHITECTURE and config.inception is None:
         problems.append("the inception architecture needs the model.inception section")
+    if config.architecture == SHALABI_INCEPTION_ARCHITECTURE and config.shalabi_inception is None:
+        problems.append("the shalabi_inception architecture needs the model.shalabi_inception section")
+    if config.architecture == SHALABI_INCEPTION_ARCHITECTURE and config.time_masking:
+        problems.append("the shalabi_inception architecture has no time masking: set time_masking to false")
     if len(config.conv_filters) != len(config.conv_kernels):
         problems.append("conv_filters and conv_kernels must have the same length")
     if any(kernel < 3 or kernel % 2 == 0 for kernel in config.conv_kernels):
@@ -1223,10 +1424,16 @@ def _build_training_config(section: Mapping[str, Any], project_root: Path) -> Tr
         random_seed=int(_require(section, "random_seed", context)),
         calibration_bins=int(_require(section, "calibration_bins", context)),
         runs_dir=_resolve_path(_require(section, "runs_dir", context), project_root),
+        class_weighting=str(section.get("class_weighting", BALANCED_CLASS_WEIGHTING)),
+        standardization=str(section.get("standardization", FREQUENCY_STANDARDIZATION)),
     )
     problems = []
-    if config.representation not in ("spectrogram", "scalogram"):
-        problems.append("representation must be spectrogram or scalogram")
+    if config.representation not in VALID_REPRESENTATIONS:
+        problems.append(f"representation must be one of {VALID_REPRESENTATIONS}")
+    if config.class_weighting not in VALID_CLASS_WEIGHTINGS:
+        problems.append(f"class_weighting must be one of {VALID_CLASS_WEIGHTINGS}")
+    if config.standardization not in VALID_STANDARDIZATIONS:
+        problems.append(f"standardization must be one of {VALID_STANDARDIZATIONS}")
     if config.feature_source not in VALID_WAVEFORM_SOURCES:
         problems.append(f"feature_source must be one of {VALID_WAVEFORM_SOURCES}")
     if config.device not in ("auto", "cpu", "mps", "cuda"):
@@ -1475,7 +1682,7 @@ def load_config(config_path: str | Path, project_root: str | Path | None = None)
         raise TypeError(f"Configuration file {config_path} must contain a mapping.")
 
     data = _build_data_config(_require(raw, "data", "root"), root)
-    return ProjectConfig(
+    config = ProjectConfig(
         data=data,
         columns=_build_columns_config(_require(raw, "columns", "root")),
         exploration=_build_exploration_config(_require(raw, "exploration", "root")),
@@ -1490,6 +1697,10 @@ def load_config(config_path: str | Path, project_root: str | Path | None = None)
         learning_curve=_build_learning_curve_config(_require(raw, "learning_curve", "root"), root),
         output=_build_output_config(_require(raw, "output", "root"), root),
     )
+    if config.training.representation == OBSPY_REPRESENTATION and config.preprocessing.obspy_spectrogram is None:
+        raise ValueError(f"training.representation '{OBSPY_REPRESENTATION}' needs the "
+                         "preprocessing.obspy_spectrogram section.")
+    return config
 
 
 def ensure_output_dirs(output: OutputConfig) -> None:

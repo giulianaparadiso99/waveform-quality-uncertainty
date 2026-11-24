@@ -37,8 +37,9 @@ from __future__ import annotations
 import torch
 from torch import nn
 
-from wqu.config import INCEPTION_ARCHITECTURE, ModelConfig
+from wqu.config import INCEPTION_ARCHITECTURE, SHALABI_INCEPTION_ARCHITECTURE, ModelConfig
 from wqu.models.inception import InceptionClassifier
+from wqu.models.shalabi_inception import ShalabiInceptionClassifier
 
 # The masking helpers live in wqu.models.masking; they are also importable from here, as before the split.
 from wqu.models.masking import (  # noqa: F401
@@ -267,8 +268,11 @@ def build_model(config: ModelConfig, n_components: int, n_frequencies: int) -> n
         n_frequencies: Frequencies of the input grid.
 
     Returns:
-        CredClassifier, or InceptionClassifier (``wqu.models.inception``).
+        CredClassifier, InceptionClassifier (``wqu.models.inception``) or ShalabiInceptionClassifier
+        (``wqu.models.shalabi_inception``).
     """
     if config.architecture == INCEPTION_ARCHITECTURE:
         return InceptionClassifier(config, n_components)
+    if config.architecture == SHALABI_INCEPTION_ARCHITECTURE:
+        return ShalabiInceptionClassifier(config, n_components)
     return CredClassifier(config, n_components, n_frequencies)

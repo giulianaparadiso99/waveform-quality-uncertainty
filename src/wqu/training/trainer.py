@@ -35,7 +35,13 @@ import yaml
 from torch import nn
 from torch.utils.data import DataLoader
 
-from wqu.config import DEFAULT_TIME_MASKING, DEFAULT_WINDOW_PLACEMENT, EVENT_SPLIT_GROUPING, TrainingConfig
+from wqu.config import (
+    DEFAULT_TIME_MASKING,
+    DEFAULT_WINDOW_PLACEMENT,
+    EVENT_SPLIT_GROUPING,
+    OBSPY_REPRESENTATION,
+    TrainingConfig,
+)
 from wqu.models.loss import prior_corrected_probability
 from wqu.training.metrics import classification_metrics, expected_calibration_error
 
@@ -47,6 +53,7 @@ RESUME_SECTIONS: tuple[str, ...] = ("model", "training")
 RESUME_IGNORED_KEYS: tuple[str, ...] = ("resume",)
 WINDOW_PLACEMENT_SETTING = "window_placement"
 SPLIT_GROUPING_SETTING = "split_grouping"
+OBSPY_SETTING = "obspy_spectrogram"
 VALIDATION_PREDICTIONS_FILE = "validation_predictions.csv"
 LATEST_RUN = "latest"
 RUN_TIME_FORMAT = "%Y%m%d_%H%M%S"
@@ -175,7 +182,8 @@ def training_settings(config_path: Path) -> dict:
 
     Returns:
         Dictionary with the ``model`` and ``training`` sections (without the keys irrelevant
-        to resuming), the window placement of the features and the grouping of the split.
+        to resuming), the window placement of the features, the grouping of the split and, for the
+        ``obspy_spectrogram`` representation, the settings of its images.
     """
     raw = _read_yaml(config_path)
     settings = {section: dict(raw[section]) for section in RESUME_SECTIONS}
@@ -183,6 +191,8 @@ def training_settings(config_path: Path) -> dict:
         settings["training"].pop(key, None)
     settings[WINDOW_PLACEMENT_SETTING] = _window_placement(raw)
     settings[SPLIT_GROUPING_SETTING] = _split_grouping(raw)
+    if settings["training"].get("representation") == OBSPY_REPRESENTATION:
+        settings[OBSPY_SETTING] = raw["preprocessing"].get(OBSPY_SETTING)
     return settings
 
 

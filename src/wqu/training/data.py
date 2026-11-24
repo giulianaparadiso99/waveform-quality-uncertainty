@@ -6,6 +6,8 @@ to the three components and to all times, computed on the training records only;
 the stored values stay in decibels, so the normalization can change without
 recomputing the features.
 
+With ``training.standardization: none`` the images are used as stored (identity statistics).
+
 With time masking, each image gets one more channel holding the time mask of the
 record (1 on the time bins with recorded data, 0 on the zero padding), repeated at
 every frequency; the network separates it from the components.
@@ -20,6 +22,8 @@ import h5py
 import numpy as np
 import torch
 from torch.utils.data import DataLoader, Dataset
+
+from wqu.config import FREQUENCY_STANDARDIZATION, NO_STANDARDIZATION
 
 STATISTICS_BLOCK_SIZE = 256
 
@@ -71,7 +75,7 @@ def frequency_statistics(path: Path, representation: str, rows: np.ndarray) -> F
 
     Args:
         path: Feature file.
-        representation: ``spectrogram`` or ``scalogram``.
+        representation: Representation (name of its dataset in the feature file).
         rows: Feature indices of the training records.
 
     Returns:
@@ -99,6 +103,43 @@ def frequency_statistics(path: Path, representation: str, rows: np.ndarray) -> F
     if np.any(std == 0):
         raise ValueError("At least one frequency is constant over the training records.")
     return FrequencyStatistics(mean=mean.astype(np.float32), std=std.astype(np.float32))
+
+
+def identity_statistics(path: Path, representation: str) -> FrequencyStatistics:
+    """Statistics that leave the images unchanged (mean 0 and standard deviation 1 at every frequency).
+
+    Args:
+        path: Feature file.
+        representation: Representation (its dataset gives the number of frequencies).
+
+    Returns:
+        FrequencyStatistics.
+    """
+    with h5py.File(path, mode="r") as stored:
+        n_frequencies = stored[representation].shape[2]
+    return FrequencyStatistics(mean=np.zeros(n_frequencies, dtype=np.float32), std=np.ones(n_frequencies, dtype=np.float32))
+
+
+def normalization_statistics(path: Path, representation: str, rows: np.ndarray, standardization: str) -> FrequencyStatistics:
+    """Statistics used to standardize the images of a run.
+
+    Args:
+        path: Feature file.
+        representation: Representation.
+        rows: Feature indices of the training records.
+        standardization: ``frequency`` (``frequency_statistics``) or ``none`` (``identity_statistics``).
+
+    Returns:
+        FrequencyStatistics.
+
+    Raises:
+        ValueError: If the standardization is unknown.
+    """
+    if standardization == FREQUENCY_STANDARDIZATION:
+        return frequency_statistics(path, representation, rows)
+    if standardization == NO_STANDARDIZATION:
+        return identity_statistics(path, representation)
+    raise ValueError(f"Unknown standardization '{standardization}'.")
 
 
 def with_time_mask_channel(images: np.ndarray, masks: np.ndarray) -> np.ndarray:
@@ -135,7 +176,7 @@ class FeatureDataset(Dataset):
 
         Args:
             path: Feature file.
-            representation: ``spectrogram`` or ``scalogram``.
+            representation: Representation (name of its dataset in the feature file).
             rows: Feature indices of the records.
             labels: Labels of the records (0 = good, 1 = bad), aligned with ``rows``.
             statistics: Per-frequency statistics of the training records.
