@@ -30,6 +30,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from fractions import Fraction
+from functools import lru_cache
 
 import numpy as np
 import pandas as pd
@@ -206,8 +207,22 @@ def min_max_scaled(values: np.ndarray) -> np.ndarray:
     return (values - low) / (high - low)
 
 
+@lru_cache(maxsize=1)
+def luminance_table() -> np.ndarray:
+    """Grey level of every colour of the viridis colour scale (ITU-R 601 luminance).
+
+    Returns:
+        Array with one grey level per colour of the scale, from the lowest value to the highest.
+    """
+    colormap = colormaps[GRAYSCALE_COLORMAP]
+    return colormap(np.arange(colormap.N))[:, :3] @ LUMINANCE_WEIGHTS
+
+
 def grey_levels(values: np.ndarray, grayscale: str) -> np.ndarray:
     """Grey levels of values in [0, 1], as in the figure converted to grey levels.
+
+    Each value picks a colour of the scale as Matplotlib does (``N`` equal intervals of [0, 1], the
+    value 1 in the last one), whose grey level is read from ``luminance_table``.
 
     Args:
         values: Array of values in [0, 1].
@@ -218,7 +233,9 @@ def grey_levels(values: np.ndarray, grayscale: str) -> np.ndarray:
     """
     if grayscale != VIRIDIS_LUMINANCE_GRAYSCALE:
         return values
-    return colormaps[GRAYSCALE_COLORMAP](values)[..., :3] @ LUMINANCE_WEIGHTS
+    table = luminance_table()
+    indices = np.clip((np.asarray(values) * len(table)).astype(np.int64), 0, len(table) - 1)
+    return table[indices]
 
 
 def area_weights(n_input: int, n_output: int) -> np.ndarray:
