@@ -300,7 +300,7 @@ split:
   # assigned one by one, only to measure how optimistic such a split is. The record split is saved as
   # <output_file>_by_record.csv and its tables in <tables_dir>/by_record, so the event split is never overwritten.
   # Set it back to event before the search (notebook 08) and the learning curve (08a).
-  grouping: event
+  grouping: record
   validation_fraction: 0.2
   random_seed: 42
   output_file: data/splits/esm25_train_validation.csv
@@ -312,7 +312,7 @@ split:
 model:
   # cred = convolutional-recurrent network below (default); inception = network with Inception blocks (settings in
   # `inception` below). Time masking and the MC dropout and Grad-CAM settings apply to both.
-  architecture: cred
+  architecture: inception
   # One stage per entry; each stage halves frequencies and times. CRED: 8 and 16 filters, kernels 9 and 5.
   conv_filters: [8, 16]
   conv_kernels: [9, 5]
