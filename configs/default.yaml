@@ -407,7 +407,7 @@ training:
   representation: obspy_spectrogram
   # dev_subset to test the pipeline, seisbench for the full ESM25.
   feature_source: seisbench
-  batch_size: 64
+  batch_size: 128
   # Adam, as in Shalabi et al.; learning rate halved when the validation loss does not improve for lr_patience epochs.
   learning_rate: 1.0e-3
   weight_decay: 1.0e-4
