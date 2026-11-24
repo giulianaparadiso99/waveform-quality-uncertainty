@@ -37,82 +37,19 @@ from __future__ import annotations
 import torch
 from torch import nn
 
-from wqu.config import ModelConfig
+from wqu.config import INCEPTION_ARCHITECTURE, ModelConfig
+from wqu.models.inception import InceptionClassifier
 
-MASK_THRESHOLD = 0.5
-
-
-def apply_time_mask(features: torch.Tensor, mask: torch.Tensor | None) -> torch.Tensor:
-    """Set the padded time bins of a (batch, channels, frequencies, times) tensor to zero.
-
-    Args:
-        features: Activations or input images.
-        mask: Boolean mask of shape (batch, times), or None (no masking).
-
-    Returns:
-        Masked tensor (the input itself when ``mask`` is None).
-    """
-    if mask is None:
-        return features
-    return features * mask[:, None, None, :].to(features.dtype)
-
-
-def halve_time_mask(mask: torch.Tensor | None) -> torch.Tensor | None:
-    """Mask after a stride-2 convolution: a bin is data if any of the two bins it covers is.
-
-    Args:
-        mask: Boolean mask of shape (batch, times), or None.
-
-    Returns:
-        Boolean mask of shape (batch, ceil(times / 2)), or None.
-    """
-    if mask is None:
-        return None
-    pooled = nn.functional.max_pool1d(mask[:, None, :].float(), kernel_size=2, stride=2, ceil_mode=True)
-    return pooled[:, 0] > MASK_THRESHOLD
-
-
-def data_span(mask: torch.Tensor) -> tuple[torch.Tensor, torch.Tensor]:
-    """First data step and number of data steps of each sequence.
-
-    Args:
-        mask: Boolean mask of shape (batch, steps).
-
-    Returns:
-        Tuple (start, length), integer tensors of shape (batch,).
-
-    Raises:
-        ValueError: If a sequence has no data step or its data steps are not contiguous.
-    """
-    lengths = mask.sum(dim=1)
-    if bool((lengths == 0).any()):
-        raise ValueError("A record has no time bin with recorded data: exclude it before the network.")
-    starts = mask.float().argmax(dim=1)
-    steps = torch.arange(mask.shape[1], device=mask.device)[None, :]
-    expected = (steps >= starts[:, None]) & (steps < (starts + lengths)[:, None])
-    if not bool(torch.equal(expected, mask)):
-        raise ValueError("The time mask of a record is not a single contiguous span.")
-    return starts, lengths
-
-
-def shift_sequence(sequence: torch.Tensor, offsets: torch.Tensor) -> torch.Tensor:
-    """Shift each sequence along time: output step ``t`` takes input step ``t + offset``.
-
-    Steps falling outside the sequence are set to zero.
-
-    Args:
-        sequence: Tensor of shape (batch, steps, features).
-        offsets: Integer tensor of shape (batch,).
-
-    Returns:
-        Shifted tensor of the same shape.
-    """
-    n_steps = sequence.shape[1]
-    source = torch.arange(n_steps, device=sequence.device)[None, :] + offsets[:, None]
-    inside = (source >= 0) & (source < n_steps)
-    gathered = torch.gather(sequence, 1, source.clamp(0, n_steps - 1)[:, :, None].expand(-1, -1, sequence.shape[2]))
-    return gathered * inside[:, :, None].to(sequence.dtype)
-
+# The masking helpers live in wqu.models.masking; they are also importable from here, as before the split.
+from wqu.models.masking import (  # noqa: F401
+    MASK_THRESHOLD,
+    apply_time_mask,
+    data_span,
+    halve_time_mask,
+    masked_mean,
+    shift_sequence,
+    split_time_mask_channel,
+)
 
 class ResidualBlock(nn.Module):
     """Two pre-activated convolutions (BN, ReLU, convolution) with an identity shortcut.
@@ -304,15 +241,7 @@ class CredClassifier(nn.Module):
         Raises:
             ValueError: If the number of channels does not match the configuration.
         """
-        expected = self.n_components + (1 if self.time_masking else 0)
-        if inputs.shape[1] != expected:
-            raise ValueError(
-                f"Expected {expected} input channels ({self.n_components} components"
-                f"{' and the time mask' if self.time_masking else ''}), got {inputs.shape[1]}."
-            )
-        if not self.time_masking:
-            return inputs, None
-        return inputs[:, : self.n_components], inputs[:, self.n_components, 0, :] > MASK_THRESHOLD
+        return split_time_mask_channel(inputs, self.n_components, self.time_masking)
 
     def forward(self, inputs: torch.Tensor) -> torch.Tensor:
         """Map (batch, channels, frequencies, times) to logits of shape (batch,).
@@ -326,15 +255,11 @@ class CredClassifier(nn.Module):
         batch, channels, frequencies, times = features.shape
         sequence = features.permute(0, 3, 1, 2).reshape(batch, times, channels * frequencies)
         sequence, mask = self.recurrent(sequence, mask)
-        if mask is None:
-            summary = sequence.mean(dim=1)
-        else:
-            summary = sequence.sum(dim=1) / mask.sum(dim=1, keepdim=True).to(sequence.dtype)
-        return self.head(summary).squeeze(-1)
+        return self.head(masked_mean(sequence, mask, (1,))).squeeze(-1)
 
 
-def build_model(config: ModelConfig, n_components: int, n_frequencies: int) -> CredClassifier:
-    """Create the classifier from the configuration.
+def build_model(config: ModelConfig, n_components: int, n_frequencies: int) -> nn.Module:
+    """Create the classifier of the configured architecture (``model.architecture``).
 
     Args:
         config: Model configuration.
@@ -342,6 +267,8 @@ def build_model(config: ModelConfig, n_components: int, n_frequencies: int) -> C
         n_frequencies: Frequencies of the input grid.
 
     Returns:
-        CredClassifier.
+        CredClassifier, or InceptionClassifier (``wqu.models.inception``).
     """
+    if config.architecture == INCEPTION_ARCHITECTURE:
+        return InceptionClassifier(config, n_components)
     return CredClassifier(config, n_components, n_frequencies)

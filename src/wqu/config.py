@@ -36,6 +36,12 @@ VALID_UNCERTAINTY_MEASURES: tuple[str, ...] = (
     "mutual_information",
 )
 REQUIRED_LABELS: frozenset[int] = frozenset({0, 1})
+# Network architecture: cred = convolutional-recurrent network adapted from CRED (default, also when the
+# configuration does not name one); inception = convolutional network with Inception blocks adapted from the
+# InceptionNet variant of Shalabi et al. (see wqu.models.inception).
+CRED_ARCHITECTURE = "cred"
+INCEPTION_ARCHITECTURE = "inception"
+VALID_ARCHITECTURES: tuple[str, ...] = (CRED_ARCHITECTURE, INCEPTION_ARCHITECTURE)
 # Grouping of the training/validation split: event = all the records of an event in the same set (default, also
 # when the configuration does not name a grouping); record = records assigned one by one (no grouping), to measure
 # how optimistic a split without grouping is. The record split is stored next to the event split, with a suffix.
@@ -308,6 +314,25 @@ class SplitConfig:
 
 
 @dataclass(frozen=True)
+class InceptionConfig:
+    """Network with Inception blocks (``wqu.models.inception``).
+
+    Attributes:
+        stem_filters: Filters of the two convolutions of the stem (7 x 7 and 3 x 3, both stride 2).
+        block_filters: Output channels of each Inception block (four branches of a quarter each).
+        pool_after_blocks: Blocks (counted from 1) followed by a 3 x 3 max pooling with stride 2.
+        block_dropout: Channel dropout rate after every Inception block.
+        head_dropout: Dropout rate before the output layer.
+    """
+
+    stem_filters: int
+    block_filters: tuple[int, ...]
+    pool_after_blocks: tuple[int, ...]
+    block_dropout: float
+    head_dropout: float
+
+
+@dataclass(frozen=True)
 class ModelConfig:
     """Convolutional-recurrent network adapted from CRED (Mousavi et al., 2019).
 
@@ -330,6 +355,9 @@ class ModelConfig:
         grad_cam_records_per_class: Records per class shown in the Grad-CAM check.
         figures_dir: Output directory for the figures of the model checks.
         tables_dir: Output directory for the tables of the model checks.
+        architecture: ``cred`` (the fields above) or ``inception`` (the ``inception`` settings; the
+            CRED fields are then unused, except time masking and the MC dropout settings).
+        inception: Settings of the Inception network, or None when the configuration has none.
     """
 
     conv_filters: tuple[int, ...]
@@ -347,6 +375,8 @@ class ModelConfig:
     grad_cam_records_per_class: int
     figures_dir: Path
     tables_dir: Path
+    architecture: str = CRED_ARCHITECTURE
+    inception: InceptionConfig | None = None
 
 
 @dataclass(frozen=True)
@@ -409,6 +439,8 @@ class EvaluationConfig:
             last strata are open).
         magnitude_edges: Interior edges of the magnitude strata.
         min_class_records: Records of each class needed for an AUC in the distance-magnitude grid.
+        reference_min_magnitude: Smallest magnitude of the records selected as in a reference study
+            (metrics on subsets of the validation set).
     """
 
     run: str
@@ -422,6 +454,7 @@ class EvaluationConfig:
     distance_edges_km: tuple[float, ...]
     magnitude_edges: tuple[float, ...]
     min_class_records: int
+    reference_min_magnitude: float
 
 
 @dataclass(frozen=True)
@@ -1072,6 +1105,39 @@ def _as_int_tuple(values: Any, context: str) -> tuple[int, ...]:
     return tuple(values)
 
 
+def _build_inception_config(section: Mapping[str, Any]) -> InceptionConfig:
+    """Build and validate the ``model.inception`` section.
+
+    Args:
+        section: Parsed ``model.inception`` mapping.
+
+    Returns:
+        Validated InceptionConfig.
+    """
+    context = "model.inception"
+    pool_after_blocks = _require(section, "pool_after_blocks", context)
+    config = InceptionConfig(
+        stem_filters=int(_require(section, "stem_filters", context)),
+        block_filters=_as_int_tuple(_require(section, "block_filters", context), f"{context}.block_filters"),
+        pool_after_blocks=(_as_int_tuple(pool_after_blocks, f"{context}.pool_after_blocks")
+                           if pool_after_blocks else ()),
+        block_dropout=float(_require(section, "block_dropout", context)),
+        head_dropout=float(_require(section, "head_dropout", context)),
+    )
+    problems = []
+    if config.stem_filters < 1 or not config.block_filters:
+        problems.append("stem_filters must be positive and block_filters non-empty")
+    if any(filters < 8 or filters % 8 for filters in config.block_filters):
+        problems.append("block_filters must be multiples of 8 (branches of a quarter, reductions of an eighth)")
+    if any(not 1 <= block <= len(config.block_filters) for block in config.pool_after_blocks):
+        problems.append("pool_after_blocks must name blocks between 1 and the number of blocks")
+    if not all(0.0 <= rate < 1.0 for rate in (config.block_dropout, config.head_dropout)):
+        problems.append("dropout rates must be in [0, 1)")
+    if problems:
+        raise ValueError("Invalid Inception configuration: " + "; ".join(problems) + ".")
+    return config
+
+
 def _build_model_config(section: Mapping[str, Any], project_root: Path) -> ModelConfig:
     """Build and validate the ``model`` section.
 
@@ -1101,8 +1167,14 @@ def _build_model_config(section: Mapping[str, Any], project_root: Path) -> Model
         grad_cam_records_per_class=int(_require(grad_cam, "records_per_class", f"{context}.grad_cam")),
         figures_dir=_resolve_path(_require(section, "figures_dir", context), project_root),
         tables_dir=_resolve_path(_require(section, "tables_dir", context), project_root),
+        architecture=str(section.get("architecture", CRED_ARCHITECTURE)),
+        inception=_build_inception_config(section["inception"]) if section.get("inception") is not None else None,
     )
     problems = []
+    if config.architecture not in VALID_ARCHITECTURES:
+        problems.append(f"architecture must be one of {VALID_ARCHITECTURES}")
+    if config.architecture == INCEPTION_ARCHITECTURE and config.inception is None:
+        problems.append("the inception architecture needs the model.inception section")
     if len(config.conv_filters) != len(config.conv_kernels):
         problems.append("conv_filters and conv_kernels must have the same length")
     if any(kernel < 3 or kernel % 2 == 0 for kernel in config.conv_kernels):
@@ -1199,6 +1271,7 @@ def _build_evaluation_config(section: Mapping[str, Any]) -> EvaluationConfig:
         magnitude_edges=_as_positive_float_tuple(_require(section, "magnitude_edges", context),
                                                  f"{context}.magnitude_edges"),
         min_class_records=int(_require(section, "min_class_records", context)),
+        reference_min_magnitude=float(_require(section, "reference_min_magnitude", context)),
     )
     problems = []
     unknown = sorted(set(config.uncertainty_measures) - set(VALID_UNCERTAINTY_MEASURES))

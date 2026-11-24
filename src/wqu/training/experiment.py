@@ -19,7 +19,7 @@ import numpy as np
 import pandas as pd
 import torch
 
-from wqu.config import EVENT_SPLIT_GROUPING, ModelConfig, ProjectConfig, TrainingConfig
+from wqu.config import CRED_ARCHITECTURE, EVENT_SPLIT_GROUPING, ModelConfig, ProjectConfig, TrainingConfig
 from wqu.data.loading import CV_COMPONENTS
 from wqu.data.splitting import (
     FOLD_COLUMN,
@@ -105,9 +105,12 @@ def experiment_name(config: ProjectConfig) -> str:
         config: Project configuration.
 
     Returns:
-        ``<representation>_<window placement>`` with ``_masked`` for the time-masked network.
+        ``<representation>_<window placement>`` with ``_masked`` for the time-masked network and
+        ``_<architecture>`` for architectures other than CRED (CRED names are unchanged).
     """
     suffix = MASKED_SUFFIX if config.model.time_masking else ""
+    if config.model.architecture != CRED_ARCHITECTURE:
+        suffix += f"_{config.model.architecture}"
     return f"{config.training.representation}_{config.preprocessing.window_placement}{suffix}"
 
 

@@ -334,7 +334,8 @@ def plot_binned_rate_2d(
     Returns:
         The Axes.
     """
-    mesh = ax.pcolormesh(x_edges, y_edges, np.ma.masked_invalid(rates.T), cmap=RATE_COLORMAP, vmin=0.0, vmax=1.0)
+    mesh = ax.pcolormesh(x_edges, y_edges, np.ma.masked_invalid(rates.T), cmap=RATE_COLORMAP, vmin=0.0, vmax=1.0,
+                         rasterized=True)
     if log_x:
         ax.set_xscale("log")
     ax.set_xlabel(x_label)
@@ -517,7 +518,7 @@ def plot_time_frequency(
     step = times_s[1] - times_s[0]
     time_edges = np.concatenate((times_s - step / 2, [times_s[-1] + step / 2]))
     mesh = ax.pcolormesh(time_edges, frequency_edges_hz, image_db, cmap=POWER_COLORMAP,
-                         vmin=value_range[0], vmax=value_range[1], shading="flat")
+                         vmin=value_range[0], vmax=value_range[1], shading="flat", rasterized=True)
     ax.set_yscale("log")
     ax.grid(visible=False)
     return mesh
@@ -891,7 +892,7 @@ def _draw_frequency_time_map(
     """
     step = times_s[1] - times_s[0]
     time_edges = np.concatenate((times_s - step / 2, [times_s[-1] + step / 2]))
-    mesh = ax.pcolormesh(time_edges, frequency_edges_hz, values, cmap=colormap, shading="flat")
+    mesh = ax.pcolormesh(time_edges, frequency_edges_hz, values, cmap=colormap, shading="flat", rasterized=True)
     ax.figure.colorbar(mesh, ax=ax)
     ax.set_yscale("log")
     ax.grid(visible=False)
@@ -1175,11 +1176,14 @@ def plot_category_mean_maps(
     times_s: np.ndarray,
     anchor_s: float | None,
     title: str,
+    color_percentile: float,
 ) -> Figure:
     """Mean normalized Grad-CAM map of each category, on a common colour scale.
 
     Rows: correctness and uncertainty level; columns: true class (good, bad). The dashed
-    line marks the anchor when its position is the same in every window.
+    line marks the anchor when its position is the same in every window. The top of the
+    colour scale is a percentile of the values of all the maps drawn; the pixels above it are
+    drawn saturated (the colour bar is extended). The maps are rasterized in vector outputs.
 
     Args:
         mean_maps: Mapping from category to mean map, shape (frequencies, times).
@@ -1189,6 +1193,7 @@ def plot_category_mean_maps(
         times_s: Time-bin centres (seconds from the window start).
         anchor_s: Seconds from the window start to the anchor, or None to draw no line.
         title: Figure title.
+        color_percentile: Percentile of the map values used as the top of the colour scale (100 = maximum).
 
     Returns:
         The Figure.
@@ -1198,7 +1203,9 @@ def plot_category_mean_maps(
     figure, axes = plt.subplots(len(rows), len(columns), figsize=(5.5 * len(columns), 2.6 * len(rows)),
                                 sharex=True, sharey=True, constrained_layout=True, squeeze=False)
     available = [mean_maps[name] for name in categories if name in mean_maps]
-    vmax = max(float(values.max()) for values in available) if available else 1.0
+    all_values = np.concatenate([values.ravel() for values in available]) if available else np.ones(1)
+    vmax = float(np.percentile(all_values, color_percentile))
+    saturated = bool(all_values.max() > vmax)
     time_edges = np.concatenate((times_s - (times_s[1] - times_s[0]) / 2, [times_s[-1] + (times_s[1] - times_s[0]) / 2]))
     mesh = None
     for row, prefix in enumerate(rows):
@@ -1211,7 +1218,7 @@ def plot_category_mean_maps(
                 ax.set_title(f"{name}: no records", loc="left", fontsize=9)
                 continue
             mesh = ax.pcolormesh(time_edges, frequency_edges_hz, mean_maps[name], cmap=CATEGORY_MAP_COLORMAP,
-                                 vmin=0.0, vmax=vmax, shading="flat")
+                                 vmin=0.0, vmax=vmax, shading="flat", rasterized=True)
             if anchor_s is not None:
                 ax.axvline(anchor_s, color="white", linestyle="--", linewidth=1.0)
             ax.set_title(f"{name} ({counts.get(name, 0)} records)", loc="left", fontsize=9)
@@ -1220,7 +1227,7 @@ def plot_category_mean_maps(
     for ax in axes[:, 0]:
         ax.set_ylabel("frequency (Hz)")
     if mesh is not None:
-        figure.colorbar(mesh, ax=axes, label="mean share of the map per pixel")
+        figure.colorbar(mesh, ax=axes, label="mean share of the map per pixel", extend="max" if saturated else "neither")
     figure.suptitle(title, x=0.01, ha="left")
     return figure
 

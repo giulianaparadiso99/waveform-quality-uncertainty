@@ -30,7 +30,7 @@ import pandas as pd
 from optuna.storages import RDBStorage, RetryHeartbeatStaleTrialCallback
 from optuna.trial import TrialState
 
-from wqu.config import ModelConfig, SearchConfig, TrainingConfig
+from wqu.config import CRED_ARCHITECTURE, ModelConfig, SearchConfig, TrainingConfig
 from wqu.data.splitting import FOLD_COLUMN
 from wqu.training.experiment import (
     ExperimentRecords,
@@ -417,7 +417,13 @@ def make_objective(
 
     Returns:
         Objective function for ``study.optimize``.
+
+    Raises:
+        ValueError: If the model is not CRED (the search space holds CRED hyperparameters).
     """
+    if model.architecture != CRED_ARCHITECTURE:
+        raise ValueError(f"The search space holds hyperparameters of the CRED network; model.architecture is "
+                         f"'{model.architecture}'.")
 
     def objective(trial: optuna.Trial) -> float:
         settings = suggest_settings(trial, search, model, training)
