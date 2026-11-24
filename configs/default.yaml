@@ -295,7 +295,7 @@ preprocessing:
   # Images in the style of Shalabi et al. (2026) for training.representation: obspy_spectrogram (notebook 02d). The
   # defaults reproduce the paper: ObsPy spectrogram (Trace.spectrogram with its default settings) of each component at
   # its original sampling rate, over its recorded samples, linear frequencies up to Nyquist, power in decibels scaled
-  # to [0, 1] per component, reduced to 64 x 64. Each combination of settings has its own feature file, in
+  # to [0, 1] per component, converted to grey levels as a viridis figure, reduced to 64 x 64. Each combination of settings has its own feature file, in
   # output_dir/<source>/obspy/<settings>/ (one more subfolder with the window placement for time_axis: window).
   obspy_spectrogram:
     # original = each record resampled to original_sampling_rate_hz (at most the stored rate); stored = stored rate.
@@ -319,6 +319,10 @@ preprocessing:
     # min_max = each component scaled to [0, 1] by its minimum and maximum (as the colour scale of the figure);
     # none = values kept (absolute decibels).
     normalization: min_max
+    # viridis_luminance = scaled values drawn with the viridis colour scale of ObsPy and converted to grey levels with
+    # the ITU-R 601 luminance (as the figures of the paper, about 0.12 to 0.85); none = scaled values kept (0 to 1).
+    # Needs normalization: min_max.
+    grayscale: viridis_luminance
     n_frequencies: 64
     n_times: 64
 

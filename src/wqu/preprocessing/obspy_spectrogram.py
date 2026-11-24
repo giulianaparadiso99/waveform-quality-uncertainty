@@ -14,12 +14,16 @@ images of this module follow the same steps on the arrays, without drawing a fig
    ``pad_factor * window_samples`` samples, power spectral density without the zero frequency;
 4. the power is converted to decibels (or to its square root, the amplitude drawn by ObsPy by
    default) and scaled to [0, 1] by its minimum and maximum, as the colour scale of the figure does;
-5. the image is reduced to ``n_frequencies x n_times`` by averaging over the area of each output
-   cell, as a reduction of the drawn figure does.
+5. the scaled values are drawn with the colour scale of ObsPy (viridis) and converted to grey levels
+   with the ITU-R 601 luminance (0.299 R + 0.587 G + 0.114 B, the conversion of PIL and torchvision):
+   a monotonic but not linear map from [0, 1] to about [0.12, 0.85];
+6. the image is reduced to ``n_frequencies x n_times`` by averaging over the area of each output
+   cell, as a reduction of the drawn figure does (the luminance is linear in the colours, so it can
+   be taken before the reduction).
 
-A component without recorded data, or too short for two windows, gives an image of zeros
-(the figure of a constant spectrogram has a single colour). The conversion of the coloured figure
-to grey levels in the paper is not linear in the value; here the scaled value is used directly.
+A component without recorded data, or too short for two windows, gives a constant image: the grey
+level of the lowest colour (the figure of a constant spectrogram has a single colour), or zeros
+without the grey-level conversion. The 8-bit quantization of the figure is not reproduced.
 """
 
 from __future__ import annotations
@@ -29,12 +33,14 @@ from fractions import Fraction
 
 import numpy as np
 import pandas as pd
+from matplotlib import colormaps
 from scipy.signal import resample_poly, spectrogram
 
 from wqu.config import (
     DECIBEL_AMPLITUDE,
     LOGARITHMIC_FREQUENCY_AXIS,
     MIN_MAX_NORMALIZATION,
+    VIRIDIS_LUMINANCE_GRAYSCALE,
     ORIGINAL_SAMPLING_RATE,
     RECORDED_TIME_AXIS,
     ObspySpectrogramConfig,
@@ -47,6 +53,8 @@ from wqu.preprocessing.windowing import extract_segment
 ORIGINAL_SAMPLING_RATE_COLUMN = "original_sampling_rate_hz"
 RESAMPLING_MAX_DENOMINATOR = 1000
 MIN_WINDOWS = 2
+GRAYSCALE_COLORMAP = "viridis"
+LUMINANCE_WEIGHTS = np.array([0.299, 0.587, 0.114])
 
 
 @dataclass(frozen=True)
@@ -198,6 +206,21 @@ def min_max_scaled(values: np.ndarray) -> np.ndarray:
     return (values - low) / (high - low)
 
 
+def grey_levels(values: np.ndarray, grayscale: str) -> np.ndarray:
+    """Grey levels of values in [0, 1], as in the figure converted to grey levels.
+
+    Args:
+        values: Array of values in [0, 1].
+        grayscale: ``viridis_luminance`` (viridis colours, ITU-R 601 luminance) or ``none`` (values kept).
+
+    Returns:
+        Array of the same shape.
+    """
+    if grayscale != VIRIDIS_LUMINANCE_GRAYSCALE:
+        return values
+    return colormaps[GRAYSCALE_COLORMAP](values)[..., :3] @ LUMINANCE_WEIGHTS
+
+
 def area_weights(n_input: int, n_output: int) -> np.ndarray:
     """Weights that average input cells over the area of each output cell along one axis.
 
@@ -258,7 +281,7 @@ def component_image(
         target_hz = np.geomspace(settings.min_frequency_hz, settings.max_frequency_hz, settings.n_frequencies)
         values = logarithmic_rows(values, frequencies_hz, target_hz)
     if settings.normalization == MIN_MAX_NORMALIZATION:
-        values = min_max_scaled(values)
+        values = grey_levels(min_max_scaled(values), settings.grayscale)
     return resized(values, settings.n_frequencies, settings.n_times)
 
 
@@ -307,7 +330,9 @@ def record_image(
     if settings is None:
         raise ValueError("The configuration has no preprocessing.obspy_spectrogram settings.")
     rate_hz = record_sampling_rate(record, stored_rate_hz, settings.sampling_rate)
-    image = np.zeros((trace.shape[0], settings.n_frequencies, settings.n_times), dtype=np.float32)
+    empty_value = (float(grey_levels(np.zeros(1), settings.grayscale)[0])
+                   if settings.normalization == MIN_MAX_NORMALIZATION else 0.0)
+    image = np.full((trace.shape[0], settings.n_frequencies, settings.n_times), empty_value, dtype=np.float32)
     durations_s = np.zeros(trace.shape[0])
     has_data = np.zeros(trace.shape[0], dtype=bool)
     for component, segment in enumerate(component_segments(trace, record, stored_rate_hz, preprocessing, tolerance)):

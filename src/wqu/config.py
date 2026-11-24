@@ -72,6 +72,9 @@ VALID_OBSPY_AMPLITUDE_SCALES: tuple[str, ...] = (DECIBEL_AMPLITUDE, LINEAR_AMPLI
 MIN_MAX_NORMALIZATION = "min_max"
 NO_IMAGE_NORMALIZATION = "none"
 VALID_OBSPY_NORMALIZATIONS: tuple[str, ...] = (MIN_MAX_NORMALIZATION, NO_IMAGE_NORMALIZATION)
+NO_GRAYSCALE = "none"
+VIRIDIS_LUMINANCE_GRAYSCALE = "viridis_luminance"
+VALID_OBSPY_GRAYSCALES: tuple[str, ...] = (NO_GRAYSCALE, VIRIDIS_LUMINANCE_GRAYSCALE)
 # Weight of the bad class in the loss: balanced = n_good / n_bad of the training records (default, also when the
 # configuration does not say); none = unweighted loss.
 BALANCED_CLASS_WEIGHTING = "balanced"
@@ -292,6 +295,8 @@ class ObspySpectrogramConfig:
         amplitude_scale: ``decibel`` (10 log10 of the power) or ``linear`` (square root of the power, the
             default of ObsPy).
         normalization: ``min_max`` (each component scaled to [0, 1] by its minimum and maximum) or ``none``.
+        grayscale: ``viridis_luminance`` (scaled values drawn with the viridis colour scale of ObsPy and
+            converted to grey levels with the ITU-R 601 luminance) or ``none`` (scaled values kept).
         n_frequencies: Rows of the stored image.
         n_times: Columns of the stored image.
     """
@@ -306,6 +311,7 @@ class ObspySpectrogramConfig:
     max_frequency_hz: float
     amplitude_scale: str
     normalization: str
+    grayscale: str
     n_frequencies: int
     n_times: int
 
@@ -322,6 +328,7 @@ class ObspySpectrogramConfig:
                 frequency_axis,
                 self.amplitude_scale,
                 self.normalization,
+                self.grayscale,
                 f"w{self.window_samples}o{self.overlap:g}p{self.pad_factor}",
                 f"{self.n_frequencies}x{self.n_times}",
             )
@@ -1122,6 +1129,7 @@ def _build_obspy_spectrogram_config(section: Mapping[str, Any]) -> ObspySpectrog
         max_frequency_hz=float(_require(section, "max_frequency_hz", context)),
         amplitude_scale=str(_require(section, "amplitude_scale", context)),
         normalization=str(_require(section, "normalization", context)),
+        grayscale=str(_require(section, "grayscale", context)),
         n_frequencies=int(_require(section, "n_frequencies", context)),
         n_times=int(_require(section, "n_times", context)),
     )
@@ -1131,8 +1139,11 @@ def _build_obspy_spectrogram_config(section: Mapping[str, Any]) -> ObspySpectrog
         ("frequency_axis", config.frequency_axis, VALID_OBSPY_FREQUENCY_AXES),
         ("amplitude_scale", config.amplitude_scale, VALID_OBSPY_AMPLITUDE_SCALES),
         ("normalization", config.normalization, VALID_OBSPY_NORMALIZATIONS),
+        ("grayscale", config.grayscale, VALID_OBSPY_GRAYSCALES),
     )
     problems = [f"{name} must be one of {valid}" for name, value, valid in choices if value not in valid]
+    if config.grayscale != NO_GRAYSCALE and config.normalization != MIN_MAX_NORMALIZATION:
+        problems.append("grayscale needs normalization: min_max (the colour scale spans [0, 1])")
     if not _is_power_of_two(config.window_samples) or not _is_power_of_two(config.pad_factor):
         problems.append("window_samples and pad_factor must be powers of two")
     if not 0.0 <= config.overlap < 1.0:

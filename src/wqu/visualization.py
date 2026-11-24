@@ -1539,8 +1539,8 @@ def plot_obspy_images(
 ) -> Figure:
     """Images of the ``obspy_spectrogram`` representation, one row per record and one column per component.
 
-    The images are drawn in grey levels between 0 and 1, as the network sees them (rows: frequency
-    increasing upwards; columns: time).
+    The images are drawn in grey levels on a fixed scale from 0 to 1, as the network sees them (rows:
+    frequency increasing upwards; columns: time).
 
     Args:
         images: Array of shape (records, components, n_frequencies, n_times).
