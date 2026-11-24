@@ -333,7 +333,7 @@ split:
   # assigned one by one, only to measure how optimistic such a split is. The record split is saved as
   # <output_file>_by_record.csv and its tables in <tables_dir>/by_record, so the event split is never overwritten.
   # Set it back to event before the search (notebook 08) and the learning curve (08a).
-  grouping: event
+  grouping: record
   validation_fraction: 0.2
   random_seed: 42
   output_file: data/splits/esm25_train_validation.csv
@@ -347,7 +347,7 @@ model:
   # `inception` below); shalabi_inception = the InceptionNet variant as in the code of Shalabi et al. (settings in
   # `shalabi_inception` below; 64 x 64 inputs, needs time_masking: false). Time masking and the MC dropout and Grad-CAM
   # settings apply to all of them.
-  architecture: cred
+  architecture: shalabi_inception
   # One stage per entry; each stage halves frequencies and times. CRED: 8 and 16 filters, kernels 9 and 5.
   conv_filters: [8, 16]
   conv_kernels: [9, 5]
@@ -364,7 +364,7 @@ model:
   # Ignore the zero-padded time bins (padding common to the three components): the inputs carry the
   # time mask of notebook 02c as an extra channel, and convolutions, LSTMs and the mean over time use
   # only the bins with recorded data. false = original architecture.
-  time_masking: true
+  time_masking: false
   # Network with Inception blocks, adapted from the InceptionNet variant of Shalabi et al. (2026), scheme of their
   # Fig. 6: stem of a 7 x 7 and a 3 x 3 convolution (stride 2 each) and a 3 x 3 max pooling (stride 2), then Inception
   # blocks of four branches (1 x 1; 1 x 1 then 5 x 5; 1 x 1 then two 3 x 3; 3 x 3 average pooling then 1 x 1), each with
@@ -404,7 +404,7 @@ model:
 # configuration, the normalization statistics, the best model, the history per epoch and the figures.
 training:
   # spectrogram or scalogram (notebook 02), obspy_spectrogram (notebook 02d).
-  representation: scalogram
+  representation: obspy_spectrogram
   # dev_subset to test the pipeline, seisbench for the full ESM25.
   feature_source: seisbench
   batch_size: 64
@@ -430,10 +430,10 @@ training:
   runs_dir: runs
   # Weight of the bad class in the loss: balanced = n_good / n_bad of the training records (probabilities corrected
   # back to the class frequencies afterwards); none = unweighted BCE, as in Shalabi et al. (on balanced data).
-  class_weighting: balanced
+  class_weighting: none
   # Standardization of the inputs: frequency = per-frequency mean and standard deviation of the training records;
   # none = images used as stored (as in Shalabi et al., images in [0, 1]).
-  standardization: frequency
+  standardization: none
 
 # Evaluation of a training run (notebook 06), from the validation predictions saved by notebook 05.
 evaluation:
@@ -472,7 +472,7 @@ explanation:
   records_per_category: 5
   # MC dropout passes per map, and records per Grad-CAM batch (memory: mc_samples x batch_size maps).
   mc_samples: 20
-  batch_size: 32
+  batch_size: 128
   random_seed: 42
   # Padding checks: padding within this distance of the recorded data is excluded from the "far" padding
   # (the transforms and the coarse Grad-CAM grid smear the signal boundary over a few seconds).
