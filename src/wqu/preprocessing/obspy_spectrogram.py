@@ -90,13 +90,17 @@ def component_spans(trace: np.ndarray, tolerance: float) -> list[tuple[int, int]
     return [(int(lead), n_samples - int(trail)) for lead, trail in zip(leading[0], trailing[0])]
 
 
-def record_sampling_rate(record: pd.Series, stored_rate_hz: float, setting: str) -> float:
+def record_sampling_rate(
+    record: pd.Series, stored_rate_hz: float, setting: str, rate_column: str = ORIGINAL_SAMPLING_RATE_COLUMN
+) -> float:
     """Sampling rate at which a record is transformed.
 
     Args:
-        record: Metadata row of the record (with ``original_sampling_rate_hz``).
+        record: Metadata row of the record (with ``rate_column``).
         stored_rate_hz: Sampling rate of the stored traces.
         setting: ``original`` or ``stored`` (``ObspySpectrogramConfig.sampling_rate``).
+        rate_column: Column with the original sampling rate of the waveforms read
+            (``original_sampling_rate_hz`` for the converted data).
 
     Returns:
         The original rate of the record, at most the stored one, or the stored rate.
@@ -106,9 +110,9 @@ def record_sampling_rate(record: pd.Series, stored_rate_hz: float, setting: str)
     """
     if setting != ORIGINAL_SAMPLING_RATE:
         return stored_rate_hz
-    original = float(record[ORIGINAL_SAMPLING_RATE_COLUMN])
+    original = float(record[rate_column])
     if not original > 0:
-        raise ValueError(f"Missing or invalid {ORIGINAL_SAMPLING_RATE_COLUMN}: {record[ORIGINAL_SAMPLING_RATE_COLUMN]}.")
+        raise ValueError(f"Missing or invalid {rate_column}: {record[rate_column]}.")
     return min(original, stored_rate_hz)
 
 
@@ -326,7 +330,12 @@ def component_segments(
 
 
 def record_image(
-    trace: np.ndarray, record: pd.Series, stored_rate_hz: float, preprocessing: PreprocessingConfig, tolerance: float
+    trace: np.ndarray,
+    record: pd.Series,
+    stored_rate_hz: float,
+    preprocessing: PreprocessingConfig,
+    tolerance: float,
+    rate_column: str = ORIGINAL_SAMPLING_RATE_COLUMN,
 ) -> ObspyImage:
     """Image of the three components of one record.
 
@@ -336,6 +345,7 @@ def record_image(
         stored_rate_hz: Sampling rate of the stored traces.
         preprocessing: Preprocessing configuration with the ``obspy_spectrogram`` settings.
         tolerance: Zero threshold used to find the zero padding.
+        rate_column: Column with the original sampling rate of the waveforms read.
 
     Returns:
         ObspyImage.
@@ -346,7 +356,7 @@ def record_image(
     settings = preprocessing.obspy_spectrogram
     if settings is None:
         raise ValueError("The configuration has no preprocessing.obspy_spectrogram settings.")
-    rate_hz = record_sampling_rate(record, stored_rate_hz, settings.sampling_rate)
+    rate_hz = record_sampling_rate(record, stored_rate_hz, settings.sampling_rate, rate_column)
     empty_value = (float(grey_levels(np.zeros(1), settings.grayscale)[0])
                    if settings.normalization == MIN_MAX_NORMALIZATION else 0.0)
     image = np.full((trace.shape[0], settings.n_frequencies, settings.n_times), empty_value, dtype=np.float32)

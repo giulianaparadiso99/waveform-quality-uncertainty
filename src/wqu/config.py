@@ -75,6 +75,12 @@ VALID_OBSPY_NORMALIZATIONS: tuple[str, ...] = (MIN_MAX_NORMALIZATION, NO_IMAGE_N
 NO_GRAYSCALE = "none"
 VIRIDIS_LUMINANCE_GRAYSCALE = "viridis_luminance"
 VALID_OBSPY_GRAYSCALES: tuple[str, ...] = (NO_GRAYSCALE, VIRIDIS_LUMINANCE_GRAYSCALE)
+# Waveforms of the good records in the obspy_spectrogram images: cv = converted acceleration (ESM25GoodCV, as the bad
+# records; default, also when the configuration does not say); mp = manually processed acceleration (ESM25GoodMP, read
+# from the SeisBench server), to test a classifier that could recognize the processing instead of the quality.
+CV_GOOD_SOURCE = "cv"
+MP_GOOD_SOURCE = "mp"
+VALID_GOOD_SOURCES: tuple[str, ...] = (CV_GOOD_SOURCE, MP_GOOD_SOURCE)
 # Weight of the bad class in the loss: balanced = n_good / n_bad of the training records (default, also when the
 # configuration does not say); none = unweighted loss.
 BALANCED_CLASS_WEIGHTING = "balanced"
@@ -299,6 +305,9 @@ class ObspySpectrogramConfig:
             converted to grey levels with the ITU-R 601 luminance) or ``none`` (scaled values kept).
         n_frequencies: Rows of the stored image.
         n_times: Columns of the stored image.
+        good_source: ``cv`` or ``mp`` (see ``VALID_GOOD_SOURCES``).
+        mp_repository_name: Dataset folder of ESM25GoodMP on the SeisBench server (used with ``mp``).
+        mp_components: Components of ESM25GoodMP used as the three channels (used with ``mp``).
     """
 
     sampling_rate: str
@@ -314,6 +323,9 @@ class ObspySpectrogramConfig:
     grayscale: str
     n_frequencies: int
     n_times: int
+    good_source: str = CV_GOOD_SOURCE
+    mp_repository_name: str | None = None
+    mp_components: tuple[str, ...] = ()
 
     @property
     def variant_name(self) -> str:
@@ -331,6 +343,7 @@ class ObspySpectrogramConfig:
                 self.grayscale,
                 f"w{self.window_samples}o{self.overlap:g}p{self.pad_factor}",
                 f"{self.n_frequencies}x{self.n_times}",
+                *((f"good{self.good_source}",) if self.good_source != CV_GOOD_SOURCE else ()),
             )
         )
 
@@ -1132,6 +1145,9 @@ def _build_obspy_spectrogram_config(section: Mapping[str, Any]) -> ObspySpectrog
         grayscale=str(_require(section, "grayscale", context)),
         n_frequencies=int(_require(section, "n_frequencies", context)),
         n_times=int(_require(section, "n_times", context)),
+        good_source=str(section.get("good_source", CV_GOOD_SOURCE)),
+        mp_repository_name=section.get("mp_repository_name"),
+        mp_components=tuple(str(component) for component in section.get("mp_components", ())),
     )
     choices = (
         ("sampling_rate", config.sampling_rate, VALID_OBSPY_SAMPLING_RATES),
@@ -1140,8 +1156,11 @@ def _build_obspy_spectrogram_config(section: Mapping[str, Any]) -> ObspySpectrog
         ("amplitude_scale", config.amplitude_scale, VALID_OBSPY_AMPLITUDE_SCALES),
         ("normalization", config.normalization, VALID_OBSPY_NORMALIZATIONS),
         ("grayscale", config.grayscale, VALID_OBSPY_GRAYSCALES),
+        ("good_source", config.good_source, VALID_GOOD_SOURCES),
     )
     problems = [f"{name} must be one of {valid}" for name, value, valid in choices if value not in valid]
+    if config.good_source == MP_GOOD_SOURCE and (not config.mp_repository_name or not config.mp_components):
+        problems.append("good_source: mp needs mp_repository_name and mp_components")
     if config.grayscale != NO_GRAYSCALE and config.normalization != MIN_MAX_NORMALIZATION:
         problems.append("grayscale needs normalization: min_max (the colour scale spans [0, 1])")
     if not _is_power_of_two(config.window_samples) or not _is_power_of_two(config.pad_factor):

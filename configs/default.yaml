@@ -325,6 +325,12 @@ preprocessing:
     grayscale: viridis_luminance
     n_frequencies: 64
     n_times: 64
+    # Waveforms of the good records: cv = converted acceleration (ESM25GoodCV, as the bad records); mp = manually
+    # processed acceleration of ESM25GoodMP, read from the SeisBench server (notebook 02e; the images of the bad
+    # records are copied from the cv variant). mp tests whether a classifier can separate the classes by the processing.
+    good_source: mp
+    mp_repository_name: esm25goodmp
+    mp_components: [acc_mp_u, acc_mp_v, acc_mp_w]
 
 # Training/validation split of ESM25 (the test set is made of later ESM records, outside ESM25).
 # Records are grouped by event (columns.event_id) and stratified by label.

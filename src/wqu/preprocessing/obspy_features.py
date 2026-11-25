@@ -13,12 +13,16 @@ networks exclude, so the runs on this file use the same records as the other run
 Each combination of settings has its own folder, so variants of the images coexist. The file is
 written under a temporary name with a flag per record and renamed at the end; an interrupted run
 resumes from the records not yet flagged.
+
+With ``good_source: mp`` the good records are computed from the manually processed acceleration
+(read from the server), while the images of the bad records, identical to those of the variant
+with ``good_source: cv``, are copied from its file (``PrecomputedImages``).
 """
 
 from __future__ import annotations
 
 from collections.abc import Callable, Iterable
-from dataclasses import asdict
+from dataclasses import asdict, dataclass, replace
 from pathlib import Path
 
 import h5py
@@ -26,9 +30,9 @@ import numpy as np
 import pandas as pd
 from tqdm.auto import tqdm
 
-from wqu.config import OBSPY_REPRESENTATION, WINDOW_TIME_AXIS, PreprocessingConfig
+from wqu.config import CV_GOOD_SOURCE, OBSPY_REPRESENTATION, WINDOW_TIME_AXIS, PreprocessingConfig
 from wqu.data.loading import CV_COMPONENTS
-from wqu.preprocessing.obspy_spectrogram import image_axes, record_image
+from wqu.preprocessing.obspy_spectrogram import ORIGINAL_SAMPLING_RATE_COLUMN, image_axes, record_image
 from wqu.preprocessing.pipeline import (
     FEATURE_DTYPE,
     FEATURE_INDEX_COLUMN,
@@ -47,6 +51,23 @@ SAMPLING_RATE_COLUMN = "obspy_sampling_rate_hz"
 DURATION_COLUMN_FORMAT = "obspy_duration_s_{}"
 HAS_DATA_COLUMN_FORMAT = "obspy_has_data_{}"
 SETTING_ATTRIBUTE_FORMAT = "obspy_{}"
+GOOD_SOURCE_SETTINGS: tuple[str, ...] = ("good_source", "mp_repository_name", "mp_components")
+MP_SAMPLING_INTERVAL_COLUMN = "trace_dt_s_orig_mp"
+MP_SAMPLING_RATE_COLUMN = "mp_sampling_rate_hz"
+COPY_BLOCK_RECORDS = 2000
+
+
+@dataclass(frozen=True)
+class PrecomputedImages:
+    """Images of some records to copy from another feature file instead of computing them.
+
+    Attributes:
+        features_path: Feature file written by ``store_obspy_features`` with the same image settings.
+        records: Index labels of the records to copy (present in both files).
+    """
+
+    features_path: Path
+    records: pd.Index
 
 
 def obspy_feature_path(preprocessing: PreprocessingConfig, source: str) -> Path:
@@ -91,10 +112,17 @@ def setting_attributes(preprocessing: PreprocessingConfig) -> dict[str, object]:
         preprocessing: Preprocessing configuration with the ``obspy_spectrogram`` settings.
 
     Returns:
-        Mapping from attribute name to value (image settings, decibel floor, window placement).
+        Mapping from attribute name to value (image settings, decibel floor, window placement). The
+        settings of the good-record source are left out with ``good_source: cv``, so that the files
+        written before that option existed still match.
     """
+    settings = asdict(preprocessing.obspy_spectrogram)
+    if settings["good_source"] == CV_GOOD_SOURCE:
+        for key in GOOD_SOURCE_SETTINGS:
+            settings.pop(key)
     attributes: dict[str, object] = {
-        SETTING_ATTRIBUTE_FORMAT.format(key): value for key, value in asdict(preprocessing.obspy_spectrogram).items()
+        SETTING_ATTRIBUTE_FORMAT.format(key): ",".join(value) if isinstance(value, tuple) else value
+        for key, value in settings.items()
     }
     attributes["floor_power"] = preprocessing.floor_power
     attributes[WINDOW_PLACEMENT_ATTRIBUTE] = preprocessing.window_placement
@@ -117,9 +145,12 @@ def check_obspy_features(features_path: Path, preprocessing: PreprocessingConfig
     expected = setting_attributes(preprocessing)
     if preprocessing.obspy_spectrogram.time_axis != WINDOW_TIME_AXIS:
         expected.pop(WINDOW_PLACEMENT_ATTRIBUTE)
+    good_source_key = SETTING_ATTRIBUTE_FORMAT.format("good_source")
+    expected.setdefault(good_source_key, CV_GOOD_SOURCE)
     with h5py.File(features_path, mode="r") as stored:
-        different = {key: (stored.attrs.get(key), value) for key, value in expected.items()
-                     if stored.attrs.get(key) != value}
+        stored_settings = {key: stored.attrs.get(key) for key in expected}
+        stored_settings[good_source_key] = stored.attrs.get(good_source_key, CV_GOOD_SOURCE)
+        different = {key: (stored_settings[key], value) for key, value in expected.items() if stored_settings[key] != value}
     if different:
         raise ValueError(f"{features_path} was written with other settings (stored, configured): {different}.")
 
@@ -179,6 +210,76 @@ def _image_table(output: h5py.File, records: pd.DataFrame) -> pd.DataFrame:
     return table
 
 
+def cv_variant(preprocessing: PreprocessingConfig) -> PreprocessingConfig:
+    """The same preprocessing with the good records from the converted data (``good_source: cv``).
+
+    Args:
+        preprocessing: Preprocessing configuration with the ``obspy_spectrogram`` settings.
+
+    Returns:
+        Configuration whose images of the bad records are those of ``preprocessing``.
+    """
+    settings = replace(preprocessing.obspy_spectrogram, good_source=CV_GOOD_SOURCE)
+    return replace(preprocessing, obspy_spectrogram=settings)
+
+
+def with_mp_sampling_rate(records: pd.DataFrame) -> pd.DataFrame:
+    """Records with the sampling rate of the manually processed waveforms (``mp_sampling_rate_hz``).
+
+    Args:
+        records: Good records with ``trace_dt_s_orig_mp``.
+
+    Returns:
+        Copy of the records with the new column.
+
+    Raises:
+        ValueError: If a sampling interval is missing or not positive.
+    """
+    intervals = pd.to_numeric(records[MP_SAMPLING_INTERVAL_COLUMN], errors="coerce")
+    if not (intervals > 0).all():
+        raise ValueError(f"Missing or invalid {MP_SAMPLING_INTERVAL_COLUMN} in {int((~(intervals > 0)).sum())} records.")
+    return records.assign(**{MP_SAMPLING_RATE_COLUMN: 1.0 / intervals})
+
+
+def _copy_precomputed(output: h5py.File, records: pd.DataFrame, precomputed: PrecomputedImages,
+                      preprocessing: PreprocessingConfig) -> None:
+    """Copy the images of the precomputed records not yet processed, and flag them as processed.
+
+    Args:
+        output: Unfinished feature file open for writing.
+        records: Records of the output file, in storage order.
+        precomputed: Source file and records to copy.
+        preprocessing: Preprocessing configuration of the output file (the source must have the same
+            images apart from the source of the good records).
+
+    Raises:
+        ValueError: If the source file has other image settings or lacks some records.
+    """
+    check_obspy_features(precomputed.features_path, cv_variant(preprocessing))
+    target_rows = pd.Series(np.arange(len(records)), index=records.index.astype(str))
+    with h5py.File(precomputed.features_path, mode="r") as source:
+        source_rows = pd.Series(np.arange(len(source[RECORD_KEYS_DATASET])), index=source[RECORD_KEYS_DATASET].asstr()[()])
+        keys = precomputed.records.astype(str)
+        missing = keys.difference(source_rows.index)
+        if len(missing):
+            raise ValueError(f"{len(missing)} records to copy are not in {precomputed.features_path}.")
+        pairs = pd.DataFrame({"source": source_rows[keys].to_numpy(), "target": target_rows[keys].to_numpy()})
+        pairs = pairs[~output[PROCESSED_DATASET][()][pairs["target"].to_numpy()]].sort_values("target")
+        for start in tqdm(range(0, len(pairs), COPY_BLOCK_RECORDS), desc="copied images"):
+            block = pairs.iloc[start:start + COPY_BLOCK_RECORDS]
+            order = np.argsort(block["source"].to_numpy())
+            source_rows_block = block["source"].to_numpy()[order]
+            target_rows_block = block["target"].to_numpy()[order]
+            for name in (OBSPY_REPRESENTATION, SAMPLING_RATE_DATASET, DURATION_DATASET, HAS_DATA_DATASET):
+                values = source[name][source_rows_block]
+                for target, value in zip(target_rows_block, values):
+                    output[name][target] = value
+            processed = output[PROCESSED_DATASET][()]
+            processed[target_rows_block] = True
+            output[PROCESSED_DATASET][...] = processed
+            output.flush()
+
+
 def store_obspy_features(
     records: pd.DataFrame,
     batch_source: Callable[[pd.DataFrame], Iterable[tuple[pd.DataFrame, np.ndarray]]],
@@ -186,6 +287,8 @@ def store_obspy_features(
     preprocessing: PreprocessingConfig,
     tolerance: float,
     output_path: Path,
+    precomputed: PrecomputedImages | None = None,
+    rate_column: str = ORIGINAL_SAMPLING_RATE_COLUMN,
 ) -> pd.DataFrame:
     """Compute the image of every record and store it; resumable.
 
@@ -196,6 +299,9 @@ def store_obspy_features(
         preprocessing: Preprocessing configuration with the ``obspy_spectrogram`` settings.
         tolerance: Zero threshold used to find the zero padding.
         output_path: HDF5 file to create.
+        precomputed: Records whose images are copied from another file before the others are
+            computed, or None.
+        rate_column: Column with the original sampling rate of the waveforms of the computed records.
 
     Returns:
         Table of the records with at least one component with data, with ``feature_index``, sampling
@@ -209,12 +315,14 @@ def store_obspy_features(
     positions = pd.Series(np.arange(len(records)), index=records.index)
     temporary_path = output_path.with_suffix(".partial.h5")
     with _open_obspy_file(temporary_path, records, preprocessing) as output:
+        if precomputed is not None:
+            _copy_precomputed(output, records, precomputed, preprocessing)
         processed = output[PROCESSED_DATASET][()]
         with tqdm(total=len(records), initial=int(processed.sum()), desc="obspy spectrograms") as progress:
             for batch, traces in batch_source(records[~processed]):
                 for (index, record), trace in zip(batch.iterrows(), traces):
                     try:
-                        result = record_image(trace, record, stored_rate_hz, preprocessing, tolerance)
+                        result = record_image(trace, record, stored_rate_hz, preprocessing, tolerance, rate_column)
                     except (ValueError, IndexError, ZeroDivisionError) as error:
                         raise RuntimeError(f"Record {index} could not be processed: {error}") from error
                     row = int(positions[index])
