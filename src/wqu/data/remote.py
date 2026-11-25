@@ -11,14 +11,19 @@ downloaded (``iter_remote_trace_batches``: the ESM25GoodMP acceleration).
 
 from __future__ import annotations
 
+import asyncio
+import logging
+import time
 from collections.abc import Iterator, Sequence
-from contextlib import contextmanager
+from contextlib import ExitStack, contextmanager
 from pathlib import Path
 
+import aiohttp
 import fsspec
 import h5py
 import numpy as np
 import pandas as pd
+from fsspec.exceptions import FSTimeoutError
 from tqdm.auto import tqdm
 
 from wqu.config import ProjectConfig, SubsetConfig
@@ -31,6 +36,12 @@ TRACE_NAME_COLUMN = "trace_name"
 WAVEFORM_DATASET = "waveforms"
 DEV_INDEX_COLUMN = "dev_index"
 REMOTE_BLOCK_SIZE_BYTES = 2**21
+# Network errors after which a batch is read again from a newly opened file.
+TRANSIENT_ERRORS: tuple[type[BaseException], ...] = (FSTimeoutError, asyncio.TimeoutError, aiohttp.ClientError, OSError)
+DEFAULT_MAX_RETRIES = 5
+DEFAULT_RETRY_WAIT_S = 10.0
+
+logger = logging.getLogger(__name__)
 
 
 def parse_trace_name(trace_name: str) -> tuple[str, tuple[int | slice, ...]]:
@@ -186,11 +197,15 @@ def iter_remote_trace_batches(
     components: Sequence[str],
     batch_size: int,
     block_size_bytes: int = REMOTE_BLOCK_SIZE_BYTES,
+    max_retries: int = DEFAULT_MAX_RETRIES,
+    retry_wait_s: float = DEFAULT_RETRY_WAIT_S,
 ) -> Iterator[tuple[pd.DataFrame, np.ndarray]]:
     """Yield batches of records and some components of their traces, read from a remote waveform file.
 
     Records are read in storage order (block, then position in the block), so that the read-ahead
-    cache serves consecutive traces with few requests.
+    cache serves consecutive traces with few requests. When a batch fails with a network error
+    (``TRANSIENT_ERRORS``), the file is opened again and the batch is read again, after a wait that
+    doubles at every attempt.
 
     Args:
         records: Records with a ``trace_name`` column referring to the remote file.
@@ -198,19 +213,40 @@ def iter_remote_trace_batches(
         components: Components to read (e.g. ``acc_mp_u``, ``acc_mp_v``, ``acc_mp_w``).
         batch_size: Records per batch.
         block_size_bytes: Size of each range request.
+        max_retries: New attempts for a failed batch before the error is raised.
+        retry_wait_s: Wait before the first new attempt.
 
     Yields:
         Tuples (records of the batch, array of shape (batch, components, samples)).
+
+    Raises:
+        Exception: The network error of the last attempt, when all the attempts fail.
     """
     locations = records[TRACE_NAME_COLUMN].map(parse_trace_name)
     order = sorted(range(len(records)), key=lambda position: (locations.iloc[position][0], locations.iloc[position][1][0]))
     ordered = records.iloc[order]
-    with open_remote_hdf5(url, block_size_bytes) as remote:
+    stack = ExitStack()
+    try:
+        remote = stack.enter_context(open_remote_hdf5(url, block_size_bytes))
         positions = component_positions(file_component_order(remote), components)
         for start in range(0, len(ordered), batch_size):
             batch = ordered.iloc[start:start + batch_size]
-            traces = [read_trace_components(remote, name, positions) for name in batch[TRACE_NAME_COLUMN]]
+            for attempt in range(max_retries + 1):
+                try:
+                    traces = [read_trace_components(remote, name, positions) for name in batch[TRACE_NAME_COLUMN]]
+                    break
+                except TRANSIENT_ERRORS as error:
+                    if attempt == max_retries:
+                        raise
+                    wait_s = retry_wait_s * 2**attempt
+                    logger.warning("Batch at record %d failed (%s); new attempt in %.0f s.", start, type(error).__name__, wait_s)
+                    stack.close()
+                    time.sleep(wait_s)
+                    stack = ExitStack()
+                    remote = stack.enter_context(open_remote_hdf5(url, block_size_bytes))
             yield batch, np.stack(traces)
+    finally:
+        stack.close()
 
 
 def select_dev_subset(metadata: pd.DataFrame, config: ProjectConfig) -> pd.DataFrame:
