@@ -38,7 +38,7 @@ DEV_INDEX_COLUMN = "dev_index"
 REMOTE_BLOCK_SIZE_BYTES = 2**21
 # Network errors after which a batch is read again from a newly opened file.
 TRANSIENT_ERRORS: tuple[type[BaseException], ...] = (FSTimeoutError, asyncio.TimeoutError, aiohttp.ClientError, OSError)
-DEFAULT_MAX_RETRIES = 5
+DEFAULT_MAX_RETRIES = 8
 DEFAULT_RETRY_WAIT_S = 10.0
 
 logger = logging.getLogger(__name__)
@@ -204,8 +204,8 @@ def iter_remote_trace_batches(
 
     Records are read in storage order (block, then position in the block), so that the read-ahead
     cache serves consecutive traces with few requests. When a batch fails with a network error
-    (``TRANSIENT_ERRORS``), the file is opened again and the batch is read again, after a wait that
-    doubles at every attempt.
+    (``TRANSIENT_ERRORS``, including a failed opening of the file, e.g. without connection), the file
+    is opened again and the batch is read again, after a wait that doubles at every attempt.
 
     Args:
         records: Records with a ``trace_name`` column referring to the remote file.
@@ -226,13 +226,16 @@ def iter_remote_trace_batches(
     order = sorted(range(len(records)), key=lambda position: (locations.iloc[position][0], locations.iloc[position][1][0]))
     ordered = records.iloc[order]
     stack = ExitStack()
+    remote: h5py.File | None = None
+    positions: list[int] = []
     try:
-        remote = stack.enter_context(open_remote_hdf5(url, block_size_bytes))
-        positions = component_positions(file_component_order(remote), components)
         for start in range(0, len(ordered), batch_size):
             batch = ordered.iloc[start:start + batch_size]
             for attempt in range(max_retries + 1):
                 try:
+                    if remote is None:
+                        remote = stack.enter_context(open_remote_hdf5(url, block_size_bytes))
+                        positions = component_positions(file_component_order(remote), components)
                     traces = [read_trace_components(remote, name, positions) for name in batch[TRACE_NAME_COLUMN]]
                     break
                 except TRANSIENT_ERRORS as error:
@@ -241,9 +244,8 @@ def iter_remote_trace_batches(
                     wait_s = retry_wait_s * 2**attempt
                     logger.warning("Batch at record %d failed (%s); new attempt in %.0f s.", start, type(error).__name__, wait_s)
                     stack.close()
+                    stack, remote = ExitStack(), None
                     time.sleep(wait_s)
-                    stack = ExitStack()
-                    remote = stack.enter_context(open_remote_hdf5(url, block_size_bytes))
             yield batch, np.stack(traces)
     finally:
         stack.close()
