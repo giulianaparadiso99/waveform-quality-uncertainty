@@ -88,6 +88,7 @@ figures of the search.
 | `05` | with `training.resume: true`, continues the most recent unfinished run from its last epoch |
 | `08a` | finished runs are skipped, the interrupted one continues from its last epoch |
 | `08` | finished trials and folds are kept; the interrupted trial is resumed from its last epoch after `search.grace_period_s` seconds |
+| `09_goodmp_check` | Size of the ESM25 files on the SeisBench server, metadata of ESM25GoodMP (manually processed good records) and its match with ESM25GoodCV, before downloading it | Remote server, ESM25 metadata | `data/goodmp/metadata.csv` |
 
 Settings must not change between the sessions of one run or study.
 

@@ -1,5 +1,5 @@
 # Data and outputs (large files, never committed)
-/data/
+data/
 outputs/
 *.h5
 *.hdf5
