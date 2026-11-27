@@ -436,7 +436,7 @@ training:
   runs_dir: runs
   # Weight of the bad class in the loss: balanced = n_good / n_bad of the training records (probabilities corrected
   # back to the class frequencies afterwards); none = unweighted BCE, as in Shalabi et al. (on balanced data).
-  class_weighting: none
+  class_weighting: balanced
   # Standardization of the inputs: frequency = per-frequency mean and standard deviation of the training records;
   # none = images used as stored (as in Shalabi et al., images in [0, 1]).
   standardization: none
@@ -444,11 +444,12 @@ training:
   # when it meets every criterion; an empty list or null keeps all records. Values of Shalabi et al. (notebook 10):
   # networks of the ITACA (IT, IV), HEAD (HL, HI, HP, HA) and TR-NSMN (TK) archives, HN channels oriented E, N, Z,
   # magnitude of at least 4 (preferred magnitude; records without magnitude dropped).
-  record_selection:
-    networks: ["IT", "IV", "HL", "HI", "HP", "HA", "TK"]
-    channel_code: "HN"
-    orientations: ["E", "N", "Z"]
-    min_magnitude: 4.0
+  
+  # record_selection:
+  #  networks: ["IT", "IV", "HL", "HI", "HP", "HA", "TK"]
+  #  channel_code: "HN"
+  #  orientations: ["E", "N", "Z"]
+  #  min_magnitude: 4.0
 
 # Evaluation of a training run (notebook 06), from the validation predictions saved by notebook 05.
 evaluation:
