@@ -1,91 +1,105 @@
-# Waveform quality with uncertainty
+# Notebooks
 
-Classification of strong-motion records of [ESM25](https://esm-db.eu/) as **good** or **bad** quality, with an
-estimate of how much each prediction can be trusted.
+The pipeline runs as a sequence of notebooks. Every parameter is read from `configs/default.yaml`; the notebooks hold no
+settings of their own. The code they call is in the `wqu` package (`src/wqu/`).
 
-In the Engineering Strong Motion database every record is reviewed by an analyst before it is processed and
-published. This project trains a neural network on the decisions already taken in ESM25, so that new records can be
-pre-classified, and attaches to every prediction a measure of uncertainty: confident predictions can be accepted
-automatically, uncertain ones sent to manual review.
+## Overview
 
-## Method in brief
+| Notebook | Purpose | Reads | Writes |
+|---|---|---|---|
+| `01_data_loading_exploration` | Metadata of the two classes, univariate separation of the classes, structure of events and stations, inspection of the waveforms (length, zero padding, gaps, spectra) | ESM25 metadata; traces of `waveforms.source` | `outputs/figures/01_exploration`, `outputs/tables/01_exploration`; the development subset in `data/dev_subset/` on first use |
+| `02_preprocessing` | Choice of the analysis window and of the anchoring method on the development subset; spectrogram and scalogram of example records; decibel floor | Development subset | `outputs/*/02_preprocessing`; features of the development subset in `data/processed/dev_subset/` |
+| `02b_preprocessing_full` | Spectrograms and scalograms of all ESM25 records, with the window placement of `preprocessing.window.placement` | Full SeisBench datasets | `data/processed/seisbench/[<placement>/]features.h5` and `records.csv` |
+| `02c_time_masks` | Time bins of every record that contain recorded data (needed with `model.time_masking: true`) | Feature file, traces | `time_masks.h5` next to the feature file |
+| `02d_obspy_features` | Images in the style of Shalabi et al. (ObsPy spectrogram, 64 x 64; settings in `preprocessing.obspy_spectrogram`) and check of the configured network on them | Full SeisBench datasets | `data/processed/seisbench/obspy/<settings>/features.h5`, `records.csv`, `excluded_records.csv` |
+| `02e_obspy_goodmp` | Same images as 02d with the good records from the manually processed acceleration of ESM25GoodMP, read from the SeisBench server (`good_source: mp`); the bad images are copied from the 02d file | 02d feature file, remote ESM25GoodMP | `data/processed/seisbench/obspy/<settings>_goodmp/features.h5` |
+| `03_split` | Training/validation split grouped by event and stratified by label | ESM25 metadata | `data/splits/esm25_train_validation.csv`, `outputs/tables/03_split` |
+| `04_model_check` | Architecture, number of parameters, training speed, MC dropout and Grad-CAM mechanics on an untrained network | Features of the development subset | `outputs/*/04_model` |
+| `05_training` | Training of one model and MC dropout predictions on the validation set | Feature file, time masks, split | `runs/<representation>_<date>_<time>/` |
+| `06_evaluation` | Metrics, confusion matrices, reliability diagram, error detection by uncertainty, rejection curves | Validation predictions of a run | `<run>/evaluation/` |
+| `07_explanation` | Grad-CAM by prediction category, mean maps and profiles, single records, confident errors, padding checks | Run, feature file, traces | `<run>/explanation/` |
+| `08a_fold_choice` | Learning curve and choice of the number of folds k of the search | Feature file, time masks, split | `runs/learning_curve/<variant>/` |
+| `08_hyperparameter_search` | Optuna search with k-fold cross-validation; out-of-fold MC dropout predictions of the best trial | Feature file, time masks, split | `runs/search/<study>/` |
+| `09_goodmp_check` | Size of the ESM25 files on the SeisBench server, metadata of ESM25GoodMP (manually processed good records) and its match with ESM25GoodCV, before downloading it | Remote server, ESM25 metadata | `data/goodmp/metadata.csv` |
+| `10_record_selection` | Network, channel and orientation codes of the records; records kept by `training.record_selection` (selection of Shalabi et al.) after each criterion; metrics of the replication run on the selected validation records | 02d records, validation predictions of the replication run | nothing (tables shown in the notebook) |
+| `11_shalabi_png_export` | Images of 02d written as the PNG files read by the code of Shalabi et al. (one 8-bit grey-level PNG per component, `GoodQuality/GQ_HNE_<index>.png`), to run their training code on our data | 02d feature file | `data/shalabi_png/Pipeline/` |
 
-- **Input**: spectrogram (STFT) and scalogram (Morlet wavelet transform) of the three components of every record,
-  in decibels, on a common grid of 128 logarithmic frequencies and 128 time bins (3 × 128 × 128). The whole stored
-  trace (420 s) is used; the zero padding that aligns the traces is ignored by the network through a time mask.
-- **Network**: convolutional-recurrent classifier adapted from CRED (residual convolutional stages, bidirectional
-  LSTM, mean over time, dense head), trained with a class-weighted binary cross-entropy.
-- **Uncertainty**: Monte Carlo dropout (50 stochastic passes): predictive entropy, its aleatoric part and the mutual
-  information (epistemic part).
-- **Evaluation**: discrimination (AUC, balanced accuracy, average precision), calibration (reliability diagram,
-  ECE), error detection by uncertainty and accuracy after rejecting the most uncertain records.
-- **Explanations**: Grad-CAM maps over MC dropout passes, compared between categories of records (right or wrong,
-  low or high uncertainty, true class).
-- **Hyperparameters**: Optuna search (TPE sampler, median pruner) with k-fold cross-validation grouped by event.
+`02` and `04` are studies and checks: no later notebook needs their outputs, apart from the window and anchor chosen in
+`02`, which are written by hand in the configuration.
 
-## Repository structure
+## Order
 
 ```
-.
-├── configs/default.yaml   every parameter of the project (data, preprocessing, model, training, evaluation, search)
-├── data/                  metadata, development subset, processed features, split (see data/README.md)
-├── notebooks/             the pipeline, one notebook per step (see notebooks/README.md)
-├── src/wqu/               the Python package used by the notebooks
-│   ├── data/              loading of ESM25, waveforms, training/validation split
-│   ├── preprocessing/     windowing, transforms, decibel grid, feature files, time masks
-│   ├── models/            network, loss, MC dropout, Grad-CAM
-│   ├── training/          datasets, training loop, cross-validation experiments, learning curve, search
-│   ├── evaluation/        uncertainty assessment, Grad-CAM analysis, padding checks
-│   └── visualization.py   plotting functions
-├── tests/                 checks of the transforms against SciPy and ObsPy
-├── runs/                  trained models, learning curve, hyperparameter search (generated)
-└── outputs/               figures and tables of the exploratory notebooks (generated)
+01 ──> 02 ──> 02b ──> 02c ──> 03 ──> 05 ──> 06
+                                  │       └──> 07
+                                  ├──> 08a ──> 08 ──> 05 (best settings, 2-3 seeds)
+                                  └──> 04
 ```
 
-## Installation
+- `02c` is needed only for the network with time masking, and must be run again for every window placement.
+- `02d` replaces `02b` and `02c` for the replication of Shalabi et al. (`training.representation: obspy_spectrogram`,
+  `model.architecture: shalabi_inception`); it is run again for every combination of image settings.
+- `10` is run before `05` when `training.record_selection` is set, to check how many records the selection keeps;
+  an empty selection (the default before the replication) keeps every record and leaves the earlier runs unchanged.
+- `03` is run once: the split is saved and reused by every experiment. The folds of the search (notebook `08`) are
+  computed from the same file.
+- `06` and `07` evaluate the run chosen with `evaluation.run` (`latest` = most recent run of
+  `training.representation`).
 
-The project was developed with Python 3.11 in a conda environment.
+## Settings to check before running
 
-```bash
-conda create -n wqu python=3.11
-conda activate wqu
-pip install -r requirements.txt
-pip install -e .
-```
+| Key | Used by | Meaning |
+|---|---|---|
+| `training.representation` | 05, 06, 07, 08a, 08 | `spectrogram`, `scalogram` or `obspy_spectrogram` |
+| `training.class_weighting`, `training.standardization` | 05 | weighted or unweighted loss; standardized or stored inputs |
+| `training.feature_source` | 02c, 05, 07, 08a, 08 | `seisbench` (full dataset) or `dev_subset` |
+| `preprocessing.window.placement` | 02, 02b, 02c, 05, 07, 08a, 08 | `anchored`, `clamped` or `full` |
+| `model.time_masking` | 02c, 05, 07, 08a, 08 | network that ignores the zero padding |
+| `evaluation.run` | 06, 07 | run to evaluate |
+| `search.cross_validation_folds` | 08 | number of folds k (1 = the split of `03`) |
 
-`pip install -e .` installs the `wqu` package in editable mode, so that the notebooks import the current code.
-Training runs on the CPU, on an NVIDIA GPU or on the Apple GPU (`training.device` in the configuration).
+The representation, the window placement, the time masking and the number of folds identify an experiment: the
+learning curve and the search use them in their folder names (for example
+`runs/search/search_scalogram_full_masked_cv3`), so a different value starts a different experiment instead of
+resuming the previous one. Notebook `07` checks that the placement and the masking of the configuration are those of
+the run.
 
-## Usage
+## Outputs
 
-1. Set the parameters in `configs/default.yaml`. The keys that select what is run are `data.source`,
-   `waveforms.source`, `preprocessing.window.placement`, `model.time_masking`, `training.representation` and
-   `training.feature_source`.
-2. Run the notebooks in order (see [notebooks/README.md](notebooks/README.md)). The long steps (preprocessing,
-   training, search) are resumable: after an interruption, run the notebook again.
+**Training run** (`runs/<representation>_<date>_<time>/`):
 
-## Tests
+| File | Content |
+|---|---|
+| `config.yaml` | copy of the configuration of the run |
+| `normalization.npz` | per-frequency statistics of the training records |
+| `history.csv` | losses and metrics of every epoch |
+| `checkpoint.pt` | state at the last epoch (resuming) |
+| `best_model.pt` | weights of the epoch with the lowest validation loss |
+| `validation_predictions.csv` | deterministic and MC dropout predictions, uncertainty measures |
+| `excluded_records.csv` | records without any recorded data (with time masking; classified bad by rule) |
+| `evaluation/`, `explanation/` | outputs of notebooks `06` and `07` |
 
-```bash
-pip install -r requirements-dev.txt
-pytest
-```
+**Hyperparameter search** (`runs/search/<study>/`): `study.db` (Optuna database), one folder `trial_<number>/` per
+trial with one subfolder `fold_<k>/` per fold (checkpoint, best model, history, `fold_predictions.csv`),
+normalization statistics of every fold, `trials.csv`, `best_settings.json`, `best_trial_predictions.csv` and the
+figures of the search.
 
-The tests compare the spectrogram with `scipy.signal.spectrogram` and the scalogram with
-`obspy.signal.tf_misfit.cwt`, and check the averaging on the logarithmic frequency grid and on the time bins.
+## Resuming after an interruption
 
-## License
+| Notebook | Behaviour |
+|---|---|
+| `02b` | continues from the records not yet processed |
+| `02c` | starts again from the beginning (no incomplete file is left) |
+| `02d` | continues from the records not yet processed |
+| `05` | with `training.resume: true`, continues the most recent unfinished run from its last epoch |
+| `08a` | finished runs are skipped, the interrupted one continues from its last epoch |
+| `08` | finished trials and folds are kept; the interrupted trial is resumed from its last epoch after `search.grace_period_s` seconds |
 
-The code is released under the MIT License (see [LICENSE](LICENSE)). The ESM25 data are distributed by their
-authors under the CC BY-SA 4.0 licence (see [data/README.md](data/README.md)).
+Settings must not change between the sessions of one run or study.
 
-## Main references
+## Approximate durations
 
-- ESM25: Cianetti et al. (2026), doi:10.13127/ai/esm25.
-- ESM: Luzi et al. (2020), doi:10.13127/esm.2.
-- SeisBench: Woollam et al. (2022).
-- CRED: Mousavi et al. (2019).
-- MC dropout: Gal and Ghahramani (2016).
-- Calibration: Guo et al. (2017).
-- Grad-CAM: Selvaraju et al. (2017).
-- Optuna: Akiba et al. (2019).
+On an Apple M-series GPU with the full traces and time masking: one training (`05`) takes about two hours (about
+2.5 minutes per epoch); the Grad-CAM step of `07` about ten minutes on the validation set; `08a` five trainings; `08`
+with k = 3 and 21 trials several days, depending on how many trials are pruned. Running two notebooks that use the GPU
+at the same time slows both.
