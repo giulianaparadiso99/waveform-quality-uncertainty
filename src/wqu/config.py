@@ -9,7 +9,7 @@ from __future__ import annotations
 
 from collections.abc import Mapping
 import math
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, fields
 from pathlib import Path
 from typing import Any
 
@@ -1456,6 +1456,25 @@ def _build_model_config(section: Mapping[str, Any], project_root: Path) -> Model
     return config
 
 
+def _check_known_keys(section: Mapping[str, Any], config_class: type, context: str) -> None:
+    """Reject the entries of a section that are not fields of its configuration class.
+
+    A misspelled or wrongly indented entry would otherwise be ignored without notice, and its
+    default would be used instead.
+
+    Args:
+        section: Parsed mapping.
+        config_class: Dataclass whose field names are the accepted entries.
+        context: Name of the section, for the error message.
+
+    Raises:
+        ValueError: If the section has entries that are not fields of the class.
+    """
+    unknown = sorted(set(section) - {item.name for item in fields(config_class)})
+    if unknown:
+        raise ValueError(f"Unknown entries in '{context}': {unknown} (misspelled or wrongly indented?).")
+
+
 def _build_record_selection_config(section: Mapping[str, Any] | None) -> RecordSelectionConfig:
     """Build and validate the ``training.record_selection`` section.
 
@@ -1474,6 +1493,7 @@ def _build_record_selection_config(section: Mapping[str, Any] | None) -> RecordS
     if not isinstance(section, Mapping):
         raise TypeError("Configuration entry 'training.record_selection' must be a mapping.")
     context = "training.record_selection"
+    _check_known_keys(section, RecordSelectionConfig, context)
     channel_code = section.get("channel_code")
     min_magnitude = section.get("min_magnitude")
     config = RecordSelectionConfig(
@@ -1503,8 +1523,12 @@ def _build_training_config(section: Mapping[str, Any], project_root: Path) -> Tr
 
     Returns:
         Validated TrainingConfig.
+
+    Raises:
+        ValueError: If the section has unknown entries or invalid values.
     """
     context = "training"
+    _check_known_keys(section, TrainingConfig, context)
     config = TrainingConfig(
         representation=str(_require(section, "representation", context)),
         feature_source=str(_require(section, "feature_source", context)),

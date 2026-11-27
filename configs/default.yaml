@@ -440,11 +440,15 @@ training:
   # Standardization of the inputs: frequency = per-frequency mean and standard deviation of the training records;
   # none = images used as stored (as in Shalabi et al., images in [0, 1]).
   standardization: none
+  # Records used by the experiments (notebooks 05, 08a, 08), applied after the split is attached: a record is kept
+  # when it meets every criterion; an empty list or null keeps all records. Values of Shalabi et al. (notebook 10):
+  # networks of the ITACA (IT, IV), HEAD (HL, HI, HP, HA) and TR-NSMN (TK) archives, HN channels oriented E, N, Z,
+  # magnitude of at least 4 (preferred magnitude; records without magnitude dropped).
   record_selection:
-  networks: ["IT", "IV", "HL", "HI", "HP", "HA", "TK"]
-  channel_code: "HN"
-  orientations: ["E", "N", "Z"]
-  min_magnitude: 4.0
+    networks: ["IT", "IV", "HL", "HI", "HP", "HA", "TK"]
+    channel_code: "HN"
+    orientations: ["E", "N", "Z"]
+    min_magnitude: 4.0
 
 # Evaluation of a training run (notebook 06), from the validation predictions saved by notebook 05.
 evaluation:
