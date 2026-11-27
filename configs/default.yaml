@@ -328,7 +328,7 @@ preprocessing:
     # Waveforms of the good records: cv = converted acceleration (ESM25GoodCV, as the bad records); mp = manually
     # processed acceleration of ESM25GoodMP, read from the SeisBench server (notebook 02e; the images of the bad
     # records are copied from the cv variant). mp tests whether a classifier can separate the classes by the processing.
-    good_source: mp
+    good_source: cv
     mp_repository_name: esm25goodmp
     mp_components: [acc_mp_u, acc_mp_v, acc_mp_w]
 
@@ -440,6 +440,11 @@ training:
   # Standardization of the inputs: frequency = per-frequency mean and standard deviation of the training records;
   # none = images used as stored (as in Shalabi et al., images in [0, 1]).
   standardization: none
+  record_selection:
+  networks: ["IT", "IV", "HL", "HI", "HP", "HA", "TK"]
+  channel_code: "HN"
+  orientations: ["E", "N", "Z"]
+  min_magnitude: 4.0
 
 # Evaluation of a training run (notebook 06), from the validation predictions saved by notebook 05.
 evaluation:
