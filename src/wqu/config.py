@@ -9,7 +9,7 @@ from __future__ import annotations
 
 from collections.abc import Mapping
 import math
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
@@ -514,6 +514,34 @@ class ModelConfig:
 
 
 @dataclass(frozen=True)
+class RecordSelectionConfig:
+    """Selection of the records used by the training experiments.
+
+    A record is kept when it meets every configured criterion; an empty criterion keeps all records.
+    The selection is applied after the split is attached, so the training and validation records of a
+    selection are the selected records of the full split.
+
+    Attributes:
+        networks: Network codes to keep (empty: all networks).
+        channel_code: Band and instrument code of the channels to keep, e.g. ``HN`` (None: all channels).
+        orientations: Orientation codes of the u, v and w components to keep, e.g. ``(E, N, Z)``
+            (empty: all orientations).
+        min_magnitude: Smallest preferred magnitude to keep; records without magnitude are dropped
+            (None: no magnitude criterion, records without magnitude kept).
+    """
+
+    networks: tuple[str, ...] = ()
+    channel_code: str | None = None
+    orientations: tuple[str, ...] = ()
+    min_magnitude: float | None = None
+
+    @property
+    def is_empty(self) -> bool:
+        """Whether the selection keeps every record."""
+        return not self.networks and self.channel_code is None and not self.orientations and self.min_magnitude is None
+
+
+@dataclass(frozen=True)
 class TrainingConfig:
     """Training of the classifier.
 
@@ -537,6 +565,7 @@ class TrainingConfig:
         runs_dir: Directory where every run gets its own folder.
         class_weighting: Weight of the bad class in the loss (see ``VALID_CLASS_WEIGHTINGS``).
         standardization: Standardization of the inputs (see ``VALID_STANDARDIZATIONS``).
+        record_selection: Records used by the experiments (all records when empty).
     """
 
     representation: str
@@ -557,6 +586,7 @@ class TrainingConfig:
     runs_dir: Path
     class_weighting: str = BALANCED_CLASS_WEIGHTING
     standardization: str = FREQUENCY_STANDARDIZATION
+    record_selection: RecordSelectionConfig = field(default_factory=RecordSelectionConfig)
 
 
 @dataclass(frozen=True)
@@ -1426,6 +1456,44 @@ def _build_model_config(section: Mapping[str, Any], project_root: Path) -> Model
     return config
 
 
+def _build_record_selection_config(section: Mapping[str, Any] | None) -> RecordSelectionConfig:
+    """Build and validate the ``training.record_selection`` section.
+
+    Args:
+        section: Parsed mapping, or None when the section is absent (no selection).
+
+    Returns:
+        Validated RecordSelectionConfig.
+
+    Raises:
+        TypeError: If the section is not a mapping.
+        ValueError: If the channel code is empty, the orientations are not three or the magnitude is not finite.
+    """
+    if section is None:
+        return RecordSelectionConfig()
+    if not isinstance(section, Mapping):
+        raise TypeError("Configuration entry 'training.record_selection' must be a mapping.")
+    context = "training.record_selection"
+    channel_code = section.get("channel_code")
+    min_magnitude = section.get("min_magnitude")
+    config = RecordSelectionConfig(
+        networks=_as_str_tuple(section.get("networks"), f"{context}.networks"),
+        channel_code=None if channel_code is None else str(channel_code),
+        orientations=_as_str_tuple(section.get("orientations"), f"{context}.orientations"),
+        min_magnitude=None if min_magnitude is None else float(min_magnitude),
+    )
+    problems = []
+    if config.channel_code is not None and not config.channel_code.strip():
+        problems.append("channel_code must be a non-empty code or null")
+    if len(config.orientations) not in (0, 3):
+        problems.append("orientations must list the codes of the u, v and w components, or be empty")
+    if config.min_magnitude is not None and not math.isfinite(config.min_magnitude):
+        problems.append("min_magnitude must be a finite number or null")
+    if problems:
+        raise ValueError(f"Invalid {context} configuration: " + "; ".join(problems) + ".")
+    return config
+
+
 def _build_training_config(section: Mapping[str, Any], project_root: Path) -> TrainingConfig:
     """Build and validate the ``training`` section.
 
@@ -1456,6 +1524,7 @@ def _build_training_config(section: Mapping[str, Any], project_root: Path) -> Tr
         runs_dir=_resolve_path(_require(section, "runs_dir", context), project_root),
         class_weighting=str(section.get("class_weighting", BALANCED_CLASS_WEIGHTING)),
         standardization=str(section.get("standardization", FREQUENCY_STANDARDIZATION)),
+        record_selection=_build_record_selection_config(section.get("record_selection")),
     )
     problems = []
     if config.representation not in VALID_REPRESENTATIONS:

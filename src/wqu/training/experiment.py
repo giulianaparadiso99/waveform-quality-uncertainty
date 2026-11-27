@@ -13,14 +13,23 @@ from __future__ import annotations
 
 from collections.abc import Callable
 from dataclasses import dataclass
+import hashlib
 from pathlib import Path
 
 import numpy as np
 import pandas as pd
 import torch
 
-from wqu.config import CRED_ARCHITECTURE, EVENT_SPLIT_GROUPING, ModelConfig, ProjectConfig, TrainingConfig
+from wqu.config import (
+    CRED_ARCHITECTURE,
+    EVENT_SPLIT_GROUPING,
+    ModelConfig,
+    ProjectConfig,
+    RecordSelectionConfig,
+    TrainingConfig,
+)
 from wqu.data.loading import CV_COMPONENTS
+from wqu.data.selection import select_records
 from wqu.data.splitting import (
     FOLD_COLUMN,
     SPLIT_COLUMN,
@@ -92,6 +101,20 @@ MASKED_SUFFIX = "_masked"
 STATISTICS_FILE = "normalization.npz"
 FOLD_DIR_FORMAT = "fold_{}"
 RECORD_COLUMN = "record"
+SELECTION_PREFIX = "_selection"
+SELECTION_TAG_LENGTH = 8
+
+
+def selection_tag(selection: RecordSelectionConfig) -> str:
+    """Short tag identifying a record selection (the same settings always give the same tag).
+
+    Args:
+        selection: Record selection.
+
+    Returns:
+        First ``SELECTION_TAG_LENGTH`` hexadecimal digits of the SHA-256 digest of the settings.
+    """
+    return hashlib.sha256(repr(selection).encode()).hexdigest()[:SELECTION_TAG_LENGTH]
 
 
 def experiment_name(config: ProjectConfig) -> str:
@@ -101,20 +124,24 @@ def experiment_name(config: ProjectConfig) -> str:
         config: Project configuration.
 
     Returns:
-        ``<representation>_<window placement>`` with ``_masked`` for the time-masked network and
-        ``_<architecture>`` for architectures other than CRED (CRED names are unchanged).
+        ``<representation>_<window placement>`` with ``_masked`` for the time-masked network,
+        ``_<architecture>`` for architectures other than CRED and ``_selection<tag>`` for a non-empty
+        record selection (names without these settings are unchanged).
     """
     suffix = MASKED_SUFFIX if config.model.time_masking else ""
     if config.model.architecture != CRED_ARCHITECTURE:
         suffix += f"_{config.model.architecture}"
+    if not config.training.record_selection.is_empty:
+        suffix += f"{SELECTION_PREFIX}{selection_tag(config.training.record_selection)}"
     return f"{config.training.representation}_{config.preprocessing.window_placement}{suffix}"
 
 
 def load_experiment_records(config: ProjectConfig) -> ExperimentRecords:
-    """Records of the configured feature file with their split, without the records lacking data.
+    """Records of the configured feature file with their split, selection applied, without the records lacking data.
 
     Args:
-        config: Project configuration (feature source, window placement, time masking, split file).
+        config: Project configuration (feature source, window placement, time masking, split file,
+            ``training.record_selection``).
 
     Returns:
         ExperimentRecords.
@@ -131,6 +158,7 @@ def load_experiment_records(config: ProjectConfig) -> ExperimentRecords:
     check_representation_features(features_path, config.preprocessing, training.representation)
     records = read_feature_records(features_path, config_columns.text)
     records[SPLIT_COLUMN] = attach_split(records, load_split(config.split.output_file, config_columns), config_columns)
+    records = select_records(records, training.record_selection)
     time_masks = read_time_masks(time_mask_path(features_path)) if config.model.time_masking else None
     excluded = records.iloc[:0]
     if time_masks is not None:

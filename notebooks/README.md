@@ -20,6 +20,8 @@ settings of their own. The code they call is in the `wqu` package (`src/wqu/`).
 | `07_explanation` | Grad-CAM by prediction category, mean maps and profiles, single records, confident errors, padding checks | Run, feature file, traces | `<run>/explanation/` |
 | `08a_fold_choice` | Learning curve and choice of the number of folds k of the search | Feature file, time masks, split | `runs/learning_curve/<variant>/` |
 | `08_hyperparameter_search` | Optuna search with k-fold cross-validation; out-of-fold MC dropout predictions of the best trial | Feature file, time masks, split | `runs/search/<study>/` |
+| `09_goodmp_check` | Size of the ESM25 files on the SeisBench server, metadata of ESM25GoodMP (manually processed good records) and its match with ESM25GoodCV, before downloading it | Remote server, ESM25 metadata | `data/goodmp/metadata.csv` |
+| `10_record_selection` | Network, channel and orientation codes of the records; records kept by `training.record_selection` (selection of Shalabi et al.) after each criterion; metrics of the replication run on the selected validation records | 02d records, validation predictions of the replication run | nothing (tables shown in the notebook) |
 
 `02` and `04` are studies and checks: no later notebook needs their outputs, apart from the window and anchor chosen in
 `02`, which are written by hand in the configuration.
@@ -36,6 +38,8 @@ settings of their own. The code they call is in the `wqu` package (`src/wqu/`).
 - `02c` is needed only for the network with time masking, and must be run again for every window placement.
 - `02d` replaces `02b` and `02c` for the replication of Shalabi et al. (`training.representation: obspy_spectrogram`,
   `model.architecture: shalabi_inception`); it is run again for every combination of image settings.
+- `10` is run before `05` when `training.record_selection` is set, to check how many records the selection keeps;
+  an empty selection (the default before the replication) keeps every record and leaves the earlier runs unchanged.
 - `03` is run once: the split is saved and reused by every experiment. The folds of the search (notebook `08`) are
   computed from the same file.
 - `06` and `07` evaluate the run chosen with `evaluation.run` (`latest` = most recent run of
@@ -89,7 +93,6 @@ figures of the search.
 | `05` | with `training.resume: true`, continues the most recent unfinished run from its last epoch |
 | `08a` | finished runs are skipped, the interrupted one continues from its last epoch |
 | `08` | finished trials and folds are kept; the interrupted trial is resumed from its last epoch after `search.grace_period_s` seconds |
-| `09_goodmp_check` | Size of the ESM25 files on the SeisBench server, metadata of ESM25GoodMP (manually processed good records) and its match with ESM25GoodCV, before downloading it | Remote server, ESM25 metadata | `data/goodmp/metadata.csv` |
 
 Settings must not change between the sessions of one run or study.
 

@@ -21,10 +21,10 @@ import pandas as pd
 from scipy.stats import spearmanr
 from sklearn.metrics import roc_auc_score
 
+from wqu.data.selection import MAGNITUDE_COLUMN
 from wqu.evaluation.uncertainty_assessment import predicted_labels
 
 DISTANCE_COLUMN = "path_hyp_dist_km"
-MAGNITUDE_COLUMN = "preferred_magnitude"
 
 
 def interval_groups(values: pd.Series, edges: Sequence[float], label_format: str = "{:g}") -> pd.Series:

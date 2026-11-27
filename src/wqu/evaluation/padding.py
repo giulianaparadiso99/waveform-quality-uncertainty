@@ -17,7 +17,7 @@ import numpy as np
 import pandas as pd
 from sklearn.metrics import roc_auc_score
 
-from wqu.training.metrics import classification_metrics
+from wqu.training.metrics import subset_metrics
 
 MISSING_COLUMN_FORMAT = "missing_in_window_s_{}"
 NO_PADDING_GROUP = "none"
@@ -119,9 +119,6 @@ def metrics_by_group(
     rows = {}
     for group in groups.cat.categories:
         selected = (groups == group).to_numpy()
-        if not selected.any():
-            continue
-        metrics = classification_metrics(probabilities[selected], labels[selected], n_bins)
-        metrics["ece"] = classification_metrics(corrected_probabilities[selected], labels[selected], n_bins)["ece"]
-        rows[group] = {"records": int(selected.sum()), "bad_rate": float(labels[selected].mean()), **metrics}
+        if selected.any():
+            rows[group] = subset_metrics(probabilities, corrected_probabilities, labels, selected, n_bins)
     return pd.DataFrame.from_dict(rows, orient="index")

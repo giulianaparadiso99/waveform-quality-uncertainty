@@ -68,6 +68,39 @@ def classification_metrics(probabilities: np.ndarray, labels: np.ndarray, n_bins
     }
 
 
+def subset_metrics(
+    probabilities: np.ndarray,
+    corrected_probabilities: np.ndarray,
+    labels: np.ndarray,
+    selected: np.ndarray,
+    n_bins: int,
+) -> dict[str, float]:
+    """Classification metrics of a subset of the records.
+
+    AUC and balanced accuracy use the raw probabilities, the calibration error the prior-corrected ones
+    (as in the evaluation notebook).
+
+    Args:
+        probabilities: Raw probabilities of the bad class.
+        corrected_probabilities: Prior-corrected probabilities of the bad class.
+        labels: Labels (1 = bad).
+        selected: Boolean mask of the records of the subset.
+        n_bins: Bins of the calibration error.
+
+    Returns:
+        Dictionary with ``records``, ``bad_rate``, ``auc``, ``balanced_accuracy`` and ``ece``
+        (NaN AUC when the subset has a single class).
+
+    Raises:
+        ValueError: If the subset is empty.
+    """
+    if not selected.any():
+        raise ValueError("The subset holds no record.")
+    metrics = classification_metrics(probabilities[selected], labels[selected], n_bins)
+    metrics["ece"] = classification_metrics(corrected_probabilities[selected], labels[selected], n_bins)["ece"]
+    return {"records": int(selected.sum()), "bad_rate": float(labels[selected].mean()), **metrics}
+
+
 def confusion_counts(probabilities: np.ndarray, labels: np.ndarray, threshold: float = DECISION_THRESHOLD) -> np.ndarray:
     """Confusion matrix with the bad class as positive.
 
