@@ -436,7 +436,11 @@ training:
   runs_dir: runs
   # Weight of the bad class in the loss: balanced = n_good / n_bad of the training records (probabilities corrected
   # back to the class frequencies afterwards); none = unweighted BCE, as in Shalabi et al. (on balanced data).
-  class_weighting: balanced
+  class_weighting: none
+  # Class balancing of the records: none = records used as they are; undersample = in the training and in the validation
+  # set, all the bad records and as many good records drawn at random (seed random_seed), as Shalabi et al. With
+  # undersample the classes are already balanced: use class_weighting: none.
+  class_balancing: undersample
   # Standardization of the inputs: frequency = per-frequency mean and standard deviation of the training records;
   # none = images used as stored (as in Shalabi et al., images in [0, 1]).
   standardization: none

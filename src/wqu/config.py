@@ -86,6 +86,11 @@ VALID_GOOD_SOURCES: tuple[str, ...] = (CV_GOOD_SOURCE, MP_GOOD_SOURCE)
 BALANCED_CLASS_WEIGHTING = "balanced"
 NO_CLASS_WEIGHTING = "none"
 VALID_CLASS_WEIGHTINGS: tuple[str, ...] = (BALANCED_CLASS_WEIGHTING, NO_CLASS_WEIGHTING)
+# Class balancing of the records: none = records used as they are; undersample = in the training and in the validation
+# set, all the records of the rarer class and as many records of the other class drawn at random (as Shalabi et al.).
+NO_CLASS_BALANCING = "none"
+UNDERSAMPLE_CLASS_BALANCING = "undersample"
+VALID_CLASS_BALANCINGS: tuple[str, ...] = (NO_CLASS_BALANCING, UNDERSAMPLE_CLASS_BALANCING)
 # Standardization of the inputs: frequency = per-frequency mean and standard deviation of the training records
 # (default, also when the configuration does not say); none = images used as stored.
 FREQUENCY_STANDARDIZATION = "frequency"
@@ -564,6 +569,7 @@ class TrainingConfig:
         calibration_bins: Bins of the expected calibration error.
         runs_dir: Directory where every run gets its own folder.
         class_weighting: Weight of the bad class in the loss (see ``VALID_CLASS_WEIGHTINGS``).
+        class_balancing: Balancing of the classes in each set by undersampling (see ``VALID_CLASS_BALANCINGS``).
         standardization: Standardization of the inputs (see ``VALID_STANDARDIZATIONS``).
         record_selection: Records used by the experiments (all records when empty).
     """
@@ -585,6 +591,7 @@ class TrainingConfig:
     calibration_bins: int
     runs_dir: Path
     class_weighting: str = BALANCED_CLASS_WEIGHTING
+    class_balancing: str = NO_CLASS_BALANCING
     standardization: str = FREQUENCY_STANDARDIZATION
     record_selection: RecordSelectionConfig = field(default_factory=RecordSelectionConfig)
 
@@ -1547,6 +1554,7 @@ def _build_training_config(section: Mapping[str, Any], project_root: Path) -> Tr
         calibration_bins=int(_require(section, "calibration_bins", context)),
         runs_dir=_resolve_path(_require(section, "runs_dir", context), project_root),
         class_weighting=str(section.get("class_weighting", BALANCED_CLASS_WEIGHTING)),
+        class_balancing=str(section.get("class_balancing", NO_CLASS_BALANCING)),
         standardization=str(section.get("standardization", FREQUENCY_STANDARDIZATION)),
         record_selection=_build_record_selection_config(section.get("record_selection")),
     )
@@ -1555,6 +1563,8 @@ def _build_training_config(section: Mapping[str, Any], project_root: Path) -> Tr
         problems.append(f"representation must be one of {VALID_REPRESENTATIONS}")
     if config.class_weighting not in VALID_CLASS_WEIGHTINGS:
         problems.append(f"class_weighting must be one of {VALID_CLASS_WEIGHTINGS}")
+    if config.class_balancing not in VALID_CLASS_BALANCINGS:
+        problems.append(f"class_balancing must be one of {VALID_CLASS_BALANCINGS}")
     if config.standardization not in VALID_STANDARDIZATIONS:
         problems.append(f"standardization must be one of {VALID_STANDARDIZATIONS}")
     if config.feature_source not in VALID_WAVEFORM_SOURCES:

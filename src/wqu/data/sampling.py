@@ -1,9 +1,11 @@
-"""Random selection of records for development subsets and inspections."""
+"""Random selection of records for development subsets, inspections and class balancing."""
 
 from __future__ import annotations
 
 import numpy as np
 import pandas as pd
+
+from wqu.config import NO_CLASS_BALANCING, UNDERSAMPLE_CLASS_BALANCING
 
 
 def sample_records_per_label(
@@ -48,3 +50,55 @@ def sample_records_per_label(
             )
         selections.append(records if records_per_label is None else records.iloc[:records_per_label])
     return pd.concat(selections)
+
+
+def undersample_per_group(records: pd.DataFrame, label_column: str, group_column: str, seed: int) -> pd.DataFrame:
+    """Balance the labels inside each group by undersampling.
+
+    In every group (e.g. the training and the validation set), all the records of the rarest label are
+    kept and as many records of each other label are drawn at random.
+
+    Args:
+        records: Records with a label and a group column.
+        label_column: Label column.
+        group_column: Column of the groups balanced separately.
+        seed: Random seed (the same for every group).
+
+    Returns:
+        Balanced records, in their original order (original index preserved).
+
+    Raises:
+        ValueError: If a group holds a single label.
+    """
+    balanced = []
+    for group, group_records in records.groupby(group_column, sort=True):
+        label_counts = group_records[label_column].value_counts()
+        if len(label_counts) < 2:
+            raise ValueError(f"Group {group!r} holds a single label: it cannot be balanced.")
+        balanced.append(sample_records_per_label(group_records, label_column, label_column,
+                                                 int(label_counts.min()), None, seed))
+    return pd.concat(balanced).sort_index()
+
+
+def balance_classes(records: pd.DataFrame, balancing: str, label_column: str, group_column: str,
+                    seed: int) -> pd.DataFrame:
+    """Records after the configured class balancing (``training.class_balancing``).
+
+    Args:
+        records: Records with a label and a group column.
+        balancing: ``none`` (records returned unchanged) or ``undersample`` (``undersample_per_group``).
+        label_column: Label column.
+        group_column: Column of the groups balanced separately (the split).
+        seed: Random seed.
+
+    Returns:
+        Records used by the experiment.
+
+    Raises:
+        ValueError: If the balancing is unknown.
+    """
+    if balancing == NO_CLASS_BALANCING:
+        return records
+    if balancing == UNDERSAMPLE_CLASS_BALANCING:
+        return undersample_per_group(records, label_column, group_column, seed)
+    raise ValueError(f"Unknown class balancing {balancing!r}.")

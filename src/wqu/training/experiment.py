@@ -23,12 +23,14 @@ import torch
 from wqu.config import (
     CRED_ARCHITECTURE,
     EVENT_SPLIT_GROUPING,
+    NO_CLASS_BALANCING,
     ModelConfig,
     ProjectConfig,
     RecordSelectionConfig,
     TrainingConfig,
 )
 from wqu.data.loading import CV_COMPONENTS
+from wqu.data.sampling import balance_classes
 from wqu.data.selection import select_records
 from wqu.data.splitting import (
     FOLD_COLUMN,
@@ -125,14 +127,17 @@ def experiment_name(config: ProjectConfig) -> str:
 
     Returns:
         ``<representation>_<window placement>`` with ``_masked`` for the time-masked network,
-        ``_<architecture>`` for architectures other than CRED and ``_selection<tag>`` for a non-empty
-        record selection (names without these settings are unchanged).
+        ``_<architecture>`` for architectures other than CRED, ``_selection<tag>`` for a non-empty
+        record selection and ``_<class balancing>`` for a class balancing (names without these settings
+        are unchanged).
     """
     suffix = MASKED_SUFFIX if config.model.time_masking else ""
     if config.model.architecture != CRED_ARCHITECTURE:
         suffix += f"_{config.model.architecture}"
     if not config.training.record_selection.is_empty:
         suffix += f"{SELECTION_PREFIX}{selection_tag(config.training.record_selection)}"
+    if config.training.class_balancing != NO_CLASS_BALANCING:
+        suffix += f"_{config.training.class_balancing}"
     return f"{config.training.representation}_{config.preprocessing.window_placement}{suffix}"
 
 
@@ -141,7 +146,7 @@ def load_experiment_records(config: ProjectConfig) -> ExperimentRecords:
 
     Args:
         config: Project configuration (feature source, window placement, time masking, split file,
-            ``training.record_selection``).
+            ``training.record_selection``, ``training.class_balancing``).
 
     Returns:
         ExperimentRecords.
@@ -159,6 +164,8 @@ def load_experiment_records(config: ProjectConfig) -> ExperimentRecords:
     records = read_feature_records(features_path, config_columns.text)
     records[SPLIT_COLUMN] = attach_split(records, load_split(config.split.output_file, config_columns), config_columns)
     records = select_records(records, training.record_selection)
+    records = balance_classes(records, training.class_balancing, config_columns.label, SPLIT_COLUMN,
+                              training.random_seed)
     time_masks = read_time_masks(time_mask_path(features_path)) if config.model.time_masking else None
     excluded = records.iloc[:0]
     if time_masks is not None:
